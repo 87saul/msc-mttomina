@@ -3184,7 +3184,104 @@ function SelectorPeriodo({ valor, onCambiar }) {
   );
 }
 
-function RankingPorFlota({ titulo, registros, singular, plural, conLitros, colorBarra, tituloDetalle, columnasDetalle, totalDetalle }) {
+// ---------------------------------------------------------------------------
+// Indicadores de confiabilidad de un equipo (pie del detalle en Inicio)
+// ---------------------------------------------------------------------------
+// Inicio y fin reales (ms) de un trabajo. En el turno noche las horas de
+// madrugada pertenecen al día siguiente. Sin hora se usa el inicio o fin del
+// turno (Día 06:00–18:00, Noche 18:00–06:00).
+function tramoTrabajo(t) {
+  if (!t.fecha) return null;
+  const base = new Date(t.fecha + "T00:00:00").getTime();
+  const noche = t.turno === "noche";
+  const ini = t.hora_inicio ? minutosEnTurno(t.hora_inicio, t.turno) : noche ? 18 * 60 : 6 * 60;
+  let fin = t.hora_fin ? minutosEnTurno(t.hora_fin, t.turno) : noche ? 30 * 60 : 18 * 60;
+  if (fin < ini) fin += 24 * 60;
+  return { s: base + ini * 60000, e: base + fin * 60000 };
+}
+
+// Ventana del periodo: desde el inicio del turno Día de "desde" hasta el fin
+// del turno Noche de "hasta". Nunca pasa de "ahora" ni del fin del último
+// turno con trabajos registrados (así los días aún sin reportes no cuentan
+// como tiempo detenido).
+function ventanaPeriodo(desde, hasta, todosLosTrabajos = []) {
+  const ini = new Date(desde + "T06:00:00").getTime();
+  const finTeorico = new Date(hasta + "T00:00:00").getTime() + 30 * 3600000;
+  let finDatos = Infinity;
+  if (todosLosTrabajos.length) {
+    finDatos = todosLosTrabajos.reduce((max, t) => {
+      if (!t.fecha) return max;
+      const finTurno = new Date(t.fecha + "T00:00:00").getTime() + (t.turno === "noche" ? 30 : 18) * 3600000;
+      return Math.max(max, finTurno);
+    }, -Infinity);
+  }
+  return { ini, fin: Math.max(ini + 3600000, Math.min(Date.now(), finTeorico, finDatos)) };
+}
+function textoFechaHora(ms) {
+  const d = new Date(ms);
+  const p = (n) => String(n).padStart(2, "0");
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// Disponibilidad, MTBF y MTTR de un equipo en la ventana [ini, fin]:
+//  - Detención: desde que empieza un trabajo con el equipo disponible hasta
+//    que un trabajo lo deja "Disponible". Incluye los relevos de turno. Los
+//    trabajos de turnos siguientes sobre la misma avería son la misma detención.
+//  - Falla: detención que empezó con un trabajo NO programado en la ventana.
+//  - Disponibilidad = (horas del periodo − horas detenido) ÷ horas del periodo.
+//  - MTBF = horas operativas ÷ fallas.  MTTR = horas detenido por fallas ÷ fallas.
+function confiabilidadEquipo(trabajosEquipo, ini, fin) {
+  const tramos = trabajosEquipo
+    .map((t) => ({ ...tramoTrabajo(t), estado: t.estado_final, tipo: t.tipo_trabajo }))
+    .filter((x) => x.s)
+    .sort((a, b) => a.s - b.s);
+  const detenciones = [];
+  let actual = null;
+  tramos.forEach((x) => {
+    const finActual = actual ? (actual.abierta ? Infinity : actual.finReal) : -Infinity;
+    if (!actual || x.s > finActual) {
+      if (actual) detenciones.push(actual);
+      actual = { ini: x.s, finReal: x.e, abierta: x.estado === "no_disponible", falla: x.tipo === "no_programado" };
+    } else {
+      actual.finReal = Math.max(actual.finReal, x.e);
+      actual.abierta = x.estado === "no_disponible";
+    }
+  });
+  if (actual) detenciones.push(actual);
+  let horasDetenido = 0;
+  let fallas = 0;
+  let horasFallas = 0;
+  detenciones.forEach((d) => {
+    const finDet = d.abierta ? Infinity : d.finReal;
+    const a = Math.max(d.ini, ini);
+    const b = Math.min(finDet, fin);
+    if (b > a) horasDetenido += (b - a) / 3600000;
+    if (d.falla && d.ini >= ini && d.ini < fin) {
+      fallas += 1;
+      horasFallas += (Math.min(finDet, fin) - d.ini) / 3600000;
+    }
+  });
+  const horasPeriodo = (fin - ini) / 3600000;
+  horasDetenido = Math.min(horasDetenido, horasPeriodo);
+  const horasOperativas = Math.max(0, horasPeriodo - horasDetenido);
+  return {
+    horasPeriodo,
+    horasDetenido,
+    fallas,
+    disponibilidad: horasPeriodo > 0 ? (horasOperativas / horasPeriodo) * 100 : 100,
+    mtbf: fallas ? horasOperativas / fallas : null,
+    mttr: fallas ? horasFallas / fallas : null,
+  };
+}
+
+// Horas decimales → "13h 18m"
+function textoHorasMinutos(h) {
+  if (h === null || h === undefined) return "—";
+  const total = Math.round(h * 60);
+  return `${Math.floor(total / 60)}h ${String(total % 60).padStart(2, "0")}m`;
+}
+
+function RankingPorFlota({ titulo, registros, singular, plural, conLitros, colorBarra, tituloDetalle, columnasDetalle, totalDetalle, pieDetalle }) {
   const [detalle, setDetalle] = useState(null); // { equipo, flota, items }
   const [periodo, setPeriodo] = useState("7");
   const rango = rangoPeriodo(periodo);
@@ -3288,9 +3385,15 @@ function RankingPorFlota({ titulo, registros, singular, plural, conLitros, color
                 </tbody>
                 {totalDetalle && (
                   <tfoot>
-                    <tr>
-                      <td colSpan={columnasDetalle.length}>{totalDetalle(detalle.items)}</td>
-                    </tr>
+                    {pieDetalle ? (
+                      <tr className="ts-detalle-indicadores">
+                        <td colSpan={columnasDetalle.length}>{pieDetalle(detalle.equipo, desde, fechaRef, detalle.items)}</td>
+                      </tr>
+                    ) : (
+                      <tr>
+                        <td colSpan={columnasDetalle.length}>{totalDetalle(detalle.items)}</td>
+                      </tr>
+                    )}
                   </tfoot>
                 )}
               </table>
@@ -3313,8 +3416,39 @@ function minutosDeTrabajo(horaInicio, horaFin) {
 }
 
 function TopNoProgramados({ trabajos }) {
+  // Indicadores del equipo en el periodo, con todos sus trabajos (programados
+  // y no programados) para reconstruir cuándo estuvo detenido.
+  // Pie del detalle: un indicador por línea, todos con el mismo formato.
+  // El periodo termina en el último turno reportado (los días sin reportes
+  // no cuentan como tiempo detenido).
+  function indicadores(equipo, desde, hasta, items) {
+    const { ini, fin } = ventanaPeriodo(desde, hasta, trabajos);
+    const m = confiabilidadEquipo(trabajos.filter((t) => t.equipo === equipo), ini, fin);
+    const intervencion = items.reduce((s, r) => s + minutosDeTrabajo(r.hora_inicio, r.hora_fin), 0);
+    const filas = [
+      ["Fallas", m.fallas],
+      ["Tiempo total de intervención", `${Math.floor(intervencion / 60)}h ${intervencion % 60}m`],
+      ["Tiempo detenido", textoHorasMinutos(m.horasDetenido)],
+      ["Disponibilidad", `${Math.round(m.disponibilidad * 10) / 10} %`],
+      ["MTBF", textoHorasMinutos(m.mtbf)],
+      ["MTTR", textoHorasMinutos(m.mttr)],
+    ];
+    return (
+      <div
+        className="ts-detalle-kpis"
+        title={`Periodo evaluado: ${textoFechaHora(ini)} – ${textoFechaHora(fin)}. El tiempo detenido incluye los relevos de turno; una avería atendida en varios turnos cuenta como una sola falla.`}
+      >
+        {filas.map(([etiqueta, valor]) => (
+          <div key={etiqueta}>
+            {etiqueta}: {valor}
+          </div>
+        ))}
+      </div>
+    );
+  }
   return (
     <RankingPorFlota
+      pieDetalle={indicadores}
       titulo="Equipos con más trabajos no programados"
       registros={trabajos.filter((t) => t.tipo_trabajo === "no_programado")}
       singular="trabajo"
@@ -9779,6 +9913,12 @@ function Estilos() {
       .ts-detalle-rango { font-size: calc(12.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); margin-bottom: 10px; }
       .ts-modal-form:has(.ts-tabla-detalle) { max-width: 760px; }
       .ts-tabla-detalle tfoot td { font-weight: 700; padding-top: 12px; border-bottom: none; }
+      /* Celular: columna "Trabajo" del detalle del equipo (Inicio) más ancha */
+      @media (max-width: 600px) {
+        .ts-tabla-detalle th:last-child, .ts-tabla-detalle td:last-child { min-width: 340px; }
+        .ts-tabla-detalle td:last-child .ts-clamp-2 { word-break: normal; overflow-wrap: break-word; }
+      }
+      .ts-detalle-kpis { display: flex; flex-direction: column; gap: 4px; }
       .ts-ranking-puesto {
         width: 22px; height: 22px; border-radius: 50%;
         display: flex; align-items: center; justify-content: center;

@@ -589,7 +589,7 @@ export async function wordReporteTurno(ctx) {
         new TableCell({ width: { size: anchos[i], type: WidthType.DXA }, shading: fondo, borders: bordes, margins: m, children: hijos });
       const desc = [
         ...f.lineas.map((l) => parrafo(texto(l.t, { px: 10.5, negrita: l.tit, color: l.tit ? "#111827" : "#1B1F24" }), { linea: 280 })),
-        ...(f.nota ? [parrafo(texto(`Nota: ${f.nota}`, { px: 10.5, cursiva: true, color: gris }), { antes: 30 })] : []),
+        ...(f.nota ? [parrafo(texto(`Síntoma y causa: ${f.nota}`, { px: 10.5, cursiva: true, color: gris }), { antes: 30 })] : []),
       ];
       const personal = f.personal.length
         ? f.personal.map((p) => parrafo(texto(p, { px: 10.5, color: "#374151" })))

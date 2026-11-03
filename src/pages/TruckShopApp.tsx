@@ -1331,7 +1331,7 @@ function imprimirReporteTurno(trabajos, impresoPor) {
         const desc = [
           !tieneSubtitulos && t.sintoma_causa ? `<div class="tit">${escaparHTML(t.sintoma_causa)}</div>` : "",
           ...lineas.map((l) => (esSubtitulo(l) ? `<div class="tit">${escaparHTML(l)}</div>` : `<div>${escaparHTML(l)}</div>`)),
-          t.observaciones ? `<div class="nota">Nota: ${escaparHTML(t.observaciones)}</div>` : "",
+          t.observaciones ? `<div class="nota">Síntoma y causa: ${escaparHTML(t.observaciones)}</div>` : "",
         ].join("");
         const personal = (t.participantes || []).length
           ? t.participantes.map(escaparHTML).join("<br>")
@@ -1571,10 +1571,10 @@ function imprimirRegistroTrabajo(trabajo) {
       ["Tiempo de trabajo", calcularTiempoTrabajo(trabajo.hora_inicio, trabajo.hora_fin)],
     ],
     bloques: [
-      ["Síntoma y causa de la falla", trabajo.sintoma_causa],
+      ["Falla del equipo", trabajo.sintoma_causa],
       ["Descripción del trabajo", trabajo.descripcion],
       ["Personal participante", (trabajo.participantes || []).join(", ")],
-      ["Observaciones", trabajo.observaciones],
+      ["Síntoma y causa de la falla", trabajo.observaciones],
     ],
   });
 }
@@ -1638,7 +1638,7 @@ const COLUMNAS_EXPORT_TRABAJOS = [
   { clave: "equipo", titulo: "Equipo" },
   { clave: "flota", titulo: "Flota" },
   { clave: "tipo_trabajo", titulo: "Tipo" },
-  { clave: "sintoma_causa", titulo: "Síntoma y causa" },
+  { clave: "sintoma_causa", titulo: "Falla del equipo" },
   { clave: "descripcion", titulo: "Trabajo realizado" },
   { clave: "ubicacion", titulo: "Ubicación" },
   { clave: "fecha", titulo: "Fecha" },
@@ -1648,7 +1648,7 @@ const COLUMNAS_EXPORT_TRABAJOS = [
   { clave: "hora_fin", titulo: "Hora fin" },
   { clave: "estado_final", titulo: "Estado" },
   { clave: "personal", titulo: "Personal participante" },
-  { clave: "observaciones", titulo: "Observaciones" },
+  { clave: "observaciones", titulo: "Síntoma y causa de la falla" },
 ];
 
 function filasExportTrabajos(trabajos) {
@@ -2153,9 +2153,11 @@ export default function TruckShopApp() {
   );
 
   // "Actualizar" del menú: vuelve a leer todos los datos de la base de datos.
+  // Igual que volver a cargar la página: trae la versión más reciente de la
+  // app y de los datos.
   function actualizarApp() {
     setMenuPerfilAbierto(false);
-    cargarDatos();
+    window.location.reload();
   }
 
   async function cerrarSesion() {
@@ -4544,7 +4546,7 @@ function ModalFormulario({ onCerrar, children, bloqueo = null, onRecargado }) {
     }
   }, [estado]);
 
-  const nombreEditor = editor ? editor.nombre || editor.usuario : "";
+  const nombreEditor = editor ? editor.usuario || editor.nombre : "";
   return (
     <div className="ts-modal-form-fondo">
       <div className={"ts-modal-form" + (clave ? " ts-modal-con-editor" : "")} role="dialog" aria-modal="true">
@@ -4568,14 +4570,11 @@ function ModalFormulario({ onCerrar, children, bloqueo = null, onRecargado }) {
                 <IconoLateral clave="trabajos" />
               </div>
               <div>
-                <b>{nombreEditor}</b>
-                {editor && editor.usuario && editor.usuario !== nombreEditor ? ` (${editor.usuario})` : ""} está editando este
+                <b>{(editor && editor.nombre) || nombreEditor}</b>
+                {editor && editor.usuario && editor.usuario !== editor.nombre ? ` (${editor.usuario})` : ""} está editando este
                 registro desde las {new Date(editor.desde).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}.
               </div>
-              <div className="ts-campo-ayuda">
-                Para no perder información, podrás editarlo cuando esa persona salga del cuadro de edición o cierre la app.
-                Esta ventana se habilitará sola, con los datos actualizados.
-              </div>
+
               <div className="ts-form-acciones">
                 <button type="button" className="ts-btn-ghost" onClick={onCerrar}>
                   Cerrar
@@ -5128,6 +5127,7 @@ function Trabajos({ trabajos, onMarcar, puedeCrear, onCrear, onActualizar, onEli
           else onCrear(datos);
           cerrar();
         }}
+        onAutoguardar={registro ? (datos) => onActualizar(registro.id, datos) : undefined}
       />
     );
   }
@@ -5286,7 +5286,7 @@ function Trabajos({ trabajos, onMarcar, puedeCrear, onCrear, onActualizar, onEli
   );
 }
 
-function FormularioTrabajo({ onGuardar, inicial, personal, equipos }) {
+function FormularioTrabajo({ onGuardar, onAutoguardar, inicial, personal, equipos }) {
   const [form, setForm] = useState(() => {
     if (inicial) return { ...inicial, participantes: inicial.participantes || [], sintoma_causa: inicial.sintoma_causa || "" };
     return {
@@ -5343,6 +5343,32 @@ function FormularioTrabajo({ onGuardar, inicial, personal, equipos }) {
     onGuardar({ ...form, flota: equipo?.flota || "" });
   }
 
+  // Al EDITAR un trabajo, cada cambio se guarda al instante (a los ~0,8 s de
+  // dejar de escribir), para que si la persona cierra la app sin pulsar
+  // "Guardar cambios" lo llenado no se pierda y el siguiente lo vea.
+  const [estadoAutoguardado, setEstadoAutoguardado] = useState(""); // "" | "pendiente" | "guardado"
+  const [horaAutoguardado, setHoraAutoguardado] = useState("");
+  const ultimoGuardado = useRef(null);
+  useEffect(() => {
+    if (!inicial || !onAutoguardar) return;
+    const equipo = equipos.find((eq) => eq.codigo === form.equipo);
+    const datos = { ...form, flota: equipo?.flota || "" };
+    const firma = JSON.stringify(datos);
+    if (ultimoGuardado.current === null) {
+      ultimoGuardado.current = firma; // estado inicial: nada que guardar
+      return;
+    }
+    if (firma === ultimoGuardado.current) return;
+    setEstadoAutoguardado("pendiente");
+    const t = setTimeout(() => {
+      ultimoGuardado.current = firma;
+      onAutoguardar(datos);
+      setEstadoAutoguardado("guardado");
+      setHoraAutoguardado(new Date().toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" }));
+    }, 800);
+    return () => clearTimeout(t);
+  }, [form]);
+
   return (
     <Panel titulo={inicial ? `Editar trabajo — ${inicial.equipo}` : "Nuevo registro de trabajo"} subtitulo={<SelloRegistro inicial={inicial} />}>
       <div className="ts-form" onKeyDown={(e) => enviarConEnter(e, enviar)}>
@@ -5397,16 +5423,16 @@ function FormularioTrabajo({ onGuardar, inicial, personal, equipos }) {
             <option value="disponible">Disponible</option>
             <option value="no_disponible">No disponible</option>
           </CampoSelect>
-          <CampoTexto etiqueta="OT" valor={form.ot || ""} onChange={(v) => campo("ot", v)} placeholder="N° de orden de trabajo" />
+          <CampoTexto etiqueta="OT" valor={form.ot || ""} onChange={(v) => campo("ot", v)} placeholder="Orden de trabajo" />
         </div>
 
         <label className="ts-campo ts-campo-full">
-          <span>Síntoma y causa de la falla</span>
+          <span>Falla del equipo</span>
           <AreaTexto
             rows={2}
             value={form.sintoma_causa}
             onChange={(e) => campo("sintoma_causa", e.target.value)}
-            placeholder="Qué síntoma presentaba el equipo y a qué se debió la falla"
+            placeholder="Descripción del fallo"
           />
         </label>
 
@@ -5465,15 +5491,25 @@ function FormularioTrabajo({ onGuardar, inicial, personal, equipos }) {
         </div>
 
         <label className="ts-campo ts-campo-full">
-          <span>Observaciones</span>
+          <span>Síntoma y causa de la falla</span>
           <AreaTexto
             rows={2}
             value={form.observaciones}
             onChange={(e) => campo("observaciones", e.target.value)}
+            placeholder="Qué síntoma presentaba el equipo y a qué se debió la falla"
           />
         </label>
 
         <div className="ts-form-acciones">
+          {inicial && onAutoguardar && (
+            <span className="ts-autoguardado">
+              {estadoAutoguardado === "pendiente"
+                ? "Guardando…"
+                : estadoAutoguardado === "guardado"
+                ? `✓ Cambios guardados ${horaAutoguardado}`
+                : "Los cambios se guardan al instante"}
+            </span>
+          )}
           <button type="button" className="ts-btn" onClick={enviar}>
             {inicial ? "Guardar cambios" : "Guardar trabajo"}
           </button>
@@ -6720,7 +6756,7 @@ function DetalleTrabajo({ trabajo: t, onCerrar }) {
             <span className={"ts-badge " + (ok ? "ts-badge-ok" : "ts-badge-alerta")}>{ok ? "Disponible" : "No disponible"}</span>
           )}
         </div>
-        {dato("Síntoma y causa de la falla", t.sintoma_causa, "ts-detalle-titulo")}
+        {dato("Falla del equipo", t.sintoma_causa, "ts-detalle-titulo")}
         {dato("Descripción del trabajo", t.descripcion, "ts-detalle-texto")}
         {dato(
           "Personal que realizó el trabajo",
@@ -6736,7 +6772,7 @@ function DetalleTrabajo({ trabajo: t, onCerrar }) {
             "Sin personal registrado"
           )
         )}
-        {t.observaciones && dato("Observaciones", t.observaciones, "ts-detalle-texto")}
+        {t.observaciones && dato("Síntoma y causa de la falla", t.observaciones, "ts-detalle-texto")}
       </Panel>
     </ModalFormulario>
   );
@@ -10882,6 +10918,7 @@ function Estilos() {
       .ts-config-reporte-opciones .ts-check { font-size: calc(13px * var(--ts-escala-fuente, 1)); color: var(--text); }
       .ts-config-reporte-opciones input[type="checkbox"] { width: 16px; height: 16px; }
       .ts-form-acciones { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 4px; }
+      .ts-autoguardado { margin-right: auto; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); }
 
       .ts-chips-select { display: flex; flex-wrap: wrap; gap: 6px; }
       .ts-chip {
@@ -11240,6 +11277,10 @@ function Estilos() {
         .ts-bottom-nav, .ts-accion-row-split { transition: transform 0.22s ease, background-color 0.25s ease, border-color 0.25s ease; }
         .ts-barras-ocultas .ts-bottom-nav { transform: translateY(110%); }
         .ts-barras-ocultas .ts-accion-row-split { transform: translateY(72px); }
+        /* La barra superior también se oculta al deslizar hacia abajo y vuelve
+           (semitransparente) al deslizar hacia arriba. */
+        .ts-topbar { transition: transform 0.22s ease, background-color 0.25s ease, border-color 0.25s ease; }
+        .ts-barras-ocultas .ts-topbar { transform: translateY(-110%); }
         .ts-trabajos-movil { display: block; }
         .ts-aceites-movil { display: block; }
         .ts-req-movil { display: block; }

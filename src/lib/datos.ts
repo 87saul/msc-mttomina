@@ -191,6 +191,13 @@ export async function actualizar(tabla: string, id: string | number, cambios: Fi
   await revisar(supabase.from(tabla).update(fila).eq("id", id));
 }
 
+// Lee la versión más reciente de un registro (p. ej. después de que otra
+// persona terminó de editarlo). Devuelve null si ya no existe.
+export async function leerRegistro(tabla: string, id: string | number): Promise<Fila | null> {
+  const fila = await revisar(supabase.from(tabla).select("*").eq("id", id).maybeSingle());
+  return fila ? desdeFila(fila as Fila) : null;
+}
+
 export async function eliminar(tabla: string, id: string | number): Promise<void> {
   await revisar(supabase.from(tabla).delete().eq("id", id));
 }
@@ -199,6 +206,18 @@ export async function guardarConfig(clave: string, valor: unknown): Promise<void
   await revisar(
     supabase.from("configuracion").upsert({ clave, valor, actualizado_en: new Date().toISOString() }, { onConflict: "clave" })
   );
+}
+
+// Configuración → Almacenamiento (solo Administrador): espacio usado por la
+// base de datos y los archivos (función SQL uso_almacenamiento).
+export async function usoAlmacenamiento(): Promise<Fila> {
+  return (await revisar(supabase.rpc("uso_almacenamiento"))) as Fila;
+}
+
+// Lee un valor de la tabla configuracion (null si no existe).
+export async function leerConfig(clave: string): Promise<any> {
+  const fila = await revisar(supabase.from("configuracion").select("valor").eq("clave", clave).maybeSingle());
+  return fila ? (fila as Fila).valor : null;
 }
 
 export async function renombrarFlota(anterior: string, nuevo: string) {

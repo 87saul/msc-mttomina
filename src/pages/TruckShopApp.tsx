@@ -1,9 +1,10 @@
 // @ts-nocheck
 // TRUCK SHOP — aplicación principal (escritorio y celular).
 // Todos los datos se leen y guardan en Supabase (ver src/lib/datos.ts).
-import React, { useState, useMemo, useEffect } from "react";
+import React, { useState, useMemo, useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import * as db from "../lib/datos";
+import { useBloqueoEdicion } from "../lib/bloqueos";
 import { useSesion } from "../hooks/useSesion";
 import { RUTAS, vistaDesdeRuta } from "../routes/rutas";
 import CambiarContrasena from "../components/CambiarContrasena";
@@ -495,6 +496,13 @@ function usuarioParaRol(rolActual, personal) {
 
 // Iniciales para el logo por defecto cuando no se sube una imagen (ej.
 // "TRUCK SHOP" -> "TS", "Mi Taller" -> "MT").
+// Mezcla dos colores "#rrggbb": proporción "p" del primero sobre el segundo.
+function mezclarColores(a, b, p) {
+  const c = (h) => [1, 3, 5].map((i) => parseInt(String(h).slice(i, i + 2), 16) || 0);
+  const [x, y] = [c(a), c(b)];
+  return "#" + x.map((v, i) => Math.round(v * p + y[i] * (1 - p)).toString(16).padStart(2, "0")).join("");
+}
+
 function inicialesDe(nombre) {
   const palabras = (nombre || "").trim().split(/\s+/).filter(Boolean);
   if (palabras.length === 0) return "TS";
@@ -562,13 +570,62 @@ function exportarExcel(filas, columnas, nombreArchivo) {
   descargarArchivo(contenido, `${nombreArchivo}.xls`, "application/vnd.ms-excel");
 }
 
+// Word (.docx) con el mismo diseño que el PDF. La librería se carga solo al
+// descargar (src/lib/word.ts).
+function datosFormatoDoc() {
+  const cfg = registroReporte.config || {};
+  const org = registroReporte.nombreApp || cfg.empresa || "";
+  return {
+    color: registroReporte.color || "#4a8fe0",
+    logoUrl: registroReporte.logoUrl,
+    org,
+    area: cfg.area || "",
+    iniciales: inicialesDe(org),
+    factorLetra: Number(cfg.tamanoLetra) || 1,
+    fuente: cfg.fuente || "",
+    urlFuente: urlFuenteDoc,
+  };
+}
+function avisarErrorWord(e) {
+  console.error(e);
+  window.alert("No se pudo generar el documento Word. Inténtalo de nuevo.");
+}
 function exportarWord(filas, columnas, nombreArchivo, titulo) {
-  const tabla = filasATablaHTML(filas, columnas);
-  const contenido = `<html xmlns:o="urn:schemas-microsoft-com:office:office" xmlns:w="urn:schemas-microsoft-com:office:word" xmlns="http://www.w3.org/TR/REC-html40">
-    <head><meta charset="UTF-8"><title>${titulo}</title></head>
-    <body><h2>${titulo}</h2>${tabla}</body>
-  </html>`;
-  descargarArchivo(contenido, `${nombreArchivo}.doc`, "application/msword");
+  const PILL_CLASE = {
+    Disponible: "ok", Aprobado: "ok", Comprado: "ok",
+    "No disponible": "no", "No aprobado": "no", Derrame: "no",
+    "Pendiente de aprobación": "pend",
+    "En proceso de compra": "info", Cambio: "info",
+    Día: "dia", Noche: "noche",
+  };
+  const celda = (c, f) => {
+    const crudo = f[c.clave];
+    if (c.clave === "verificaciones") return crudo ? { marca: crudo === "✓" ? "ok" : "no" } : { texto: "" };
+    if (crudo === undefined || crudo === null || String(crudo).trim() === "") return { tenue: true };
+    const valor = String(fechaDoc(crudo));
+    if (c.clave === "estado_final") return { marca: valor === "Disponible" ? "ok" : "no" };
+    if (COLS_PILL_DOC.includes(c.clave)) return PILL_CLASE[valor] !== undefined ? { texto: valor, pill: PILL_CLASE[valor] } : { texto: valor, pill: "gris" };
+    if (c.clave === "cantidad_litros") return { texto: `${valor} L` };
+    return { texto: valor };
+  };
+  const ctx = {
+    ...datosFormatoDoc(),
+    titulo,
+    nombreArchivo,
+    detalle: [
+      { t: String(filas.length), b: true },
+      { t: ` ${filas.length === 1 ? "registro" : "registros"} · Emitido el ${fechaEmisionDoc()}` },
+    ],
+    // Igual que el PDF: las tablas con muchas columnas van en hoja horizontal.
+    horizontal: filas.length > 0 && columnas.length > 9,
+    columnas: columnas.map((c) => ({
+      clave: c.clave,
+      titulo: c.titulo,
+      tipo: COLS_NUM_DOC.includes(c.clave) ? "num" : COLS_LARGAS_DOC.includes(c.clave) ? "larga" : "corta",
+    })),
+    filas: filas.map((f) => columnas.map((c) => celda(c, f))),
+  };
+  import("../lib/word").then((m) => m.wordLista(ctx)).catch(avisarErrorWord);
 }
 
 // Vista previa de impresión dentro de la app. No usa ventanas emergentes
@@ -754,6 +811,26 @@ function paginarDocumento(doc) {
 // Historial del navegador para la vista previa de impresión: al abrirla se
 // agrega una entrada; la flecha "Atrás" (celular o navegador) la cierra sin
 // salir de la pantalla actual.
+// Letra de los documentos (PDF y Word): Inter, incluida en la app
+// (carpeta public/fuentes), así el PDF y el Word se ven con la misma letra en
+// cualquier equipo. Cada peso es un archivo.
+function urlFuenteDoc(archivo) {
+  const propias = typeof window !== "undefined" && window.__TS_FUENTES__;
+  if (propias && propias[archivo]) return propias[archivo];
+  return `${window.location.origin}/fuentes/${archivo}`;
+}
+function fontFaceDoc() {
+  return [
+    ["ts-inter-400.ttf", 400, "normal"],
+    ["ts-inter-400i.ttf", 400, "italic"],
+    ["ts-inter-600.ttf", 600, "normal"],
+    ["ts-inter-700.ttf", 700, "normal"],
+    ["ts-inter-800.ttf", 800, "normal"],
+  ]
+    .map(([a, w, st]) => `@font-face { font-family: "TS Doc"; src: url("${urlFuenteDoc(a)}") format("truetype"); font-weight: ${w}; font-style: ${st}; font-display: block; }`)
+    .join("\n");
+}
+const LETRA_DOC = `"TS Doc", "Segoe UI", Inter, Roboto, Arial, sans-serif`;
 const estadoVistaImpresion = { abierta: false, ignorarPop: false, cerrar: null };
 function abrirVistaImpresion(html, opciones = {}) {
   // Hoja horizontal (apaisada) para tablas con muchas columnas.
@@ -812,7 +889,8 @@ function abrirVistaImpresion(html, opciones = {}) {
   const estiloHoja = `<style>
     @page { size: letter ${horizontal ? "landscape" : "portrait"}; margin: 0; }
     :root { --ts-k: ${factorLetra}; }
-    ${fuenteDoc ? `body, table, th, td, div, span, b, strong, h1, h2, h3, h4, p, em { font-family: ${fuenteDoc} !important; }` : ""}
+    ${fontFaceDoc()}
+    body, table, th, td, div, span, b, strong, h1, h2, h3, h4, p, em { font-family: ${fuenteDoc || LETRA_DOC} !important; }
     .ts-pie-fijo { position: absolute; left: ${margenX}; right: ${margenX}; bottom: ${estrecho ? "0.5cm" : "0.85cm"}; margin: 0 !important; }
     html, body { margin: 0 !important; padding: 0 !important; }
     html { background: #d9dce0; }
@@ -882,7 +960,13 @@ function abrirVistaImpresion(html, opciones = {}) {
     const ventana = marco.contentWindow;
     if (!doc) return;
     if (horizontal) doc.documentElement.classList.add("ts-horizontal");
+    // Se mide y pagina cuando la letra ya cargó (si no, las medidas cambian).
     setTimeout(() => {
+      const listo = doc.fonts && doc.fonts.ready ? doc.fonts.ready : Promise.resolve();
+      const espera = new Promise((ok) => setTimeout(ok, 2500));
+      Promise.race([listo, espera]).then(medirYPaginar);
+    }, 30);
+    function medirYPaginar() {
       // Si una tabla no entra a lo ancho de la hoja vertical, se vuelve a
       // abrir la vista en hoja horizontal.
       if (opciones.autoHorizontal && !horizontal) {
@@ -917,7 +1001,7 @@ function abrirVistaImpresion(html, opciones = {}) {
         }
       });
       mostrarContador();
-    }, 30);
+    }
   };
 
   capa.appendChild(barra);
@@ -1002,7 +1086,7 @@ function cabeceraDocumento(titulo, detalle) {
 function estilosDocumento(color) {
   return `
       * { -webkit-print-color-adjust: exact; print-color-adjust: exact; box-sizing: border-box; }
-      body { font-family: "Segoe UI", Inter, Roboto, Arial, sans-serif; color: #1b1f24; font-size: 10px; margin: 0; }
+      body { font-family: ${LETRA_DOC}; color: #1b1f24; font-size: 10px; margin: 0; }
       .doc-cab { display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; padding-bottom: 10px; border-bottom: 2.5px solid ${color}; margin-bottom: 14px; }
       .doc-marca { display: flex; align-items: center; gap: 10px; }
       .doc-logo-img { max-width: 52px; max-height: 44px; object-fit: contain; }
@@ -1037,7 +1121,7 @@ function pillDoc(valor) {
 }
 
 // Columnas cortas (no se parten en dos líneas) y columnas de texto largo.
-const COLS_CORTAS_DOC = ["id", "equipo", "flota", "fecha", "fecha_solicitud", "turno", "hora_inicio", "hora_fin", "cantidad_litros", "horometro", "cantidad", "numero_parte", "grupo", "tipo_operacion", "estado", "estado_final"];
+const COLS_CORTAS_DOC = ["ot", "id", "equipo", "flota", "fecha", "fecha_solicitud", "turno", "hora_inicio", "hora_fin", "cantidad_litros", "horometro", "cantidad", "numero_parte", "grupo", "tipo_operacion", "estado", "estado_final"];
 const COLS_LARGAS_DOC = ["descripcion", "sintoma_causa", "observaciones", "personal"];
 const COLS_PILL_DOC = ["turno", "estado", "estado_final", "tipo_operacion"];
 const COLS_NUM_DOC = ["cantidad_litros", "horometro", "cantidad"];
@@ -1049,6 +1133,11 @@ function exportarPDF(filas, columnas, titulo, opciones = {}) {
   // Primero se intenta en vertical; si la tabla no alcanza, pasa a horizontal.
   const celda = (c, f) => {
     const crudo = f[c.clave];
+    if (c.clave === "verificaciones") {
+      if (!crudo) return "";
+      const ok = crudo === "✓";
+      return `<span class="marca ${ok ? "ok" : "no"}" title="${ok ? "Verificaciones completas" : "Faltan verificaciones"}">${ok ? "✓" : "✗"}</span>`;
+    }
     if (crudo === undefined || crudo === null || String(crudo).trim() === "") return `<span class="tenue">—</span>`;
     const valor = fechaDoc(crudo);
     if (c.clave === "estado_final") {
@@ -1092,7 +1181,7 @@ function exportarPDF(filas, columnas, titulo, opciones = {}) {
       .doc-tabla .c-descripcion { min-width: 190px; }
       .ts-horizontal .doc-tabla .c-descripcion { min-width: 200px; }
       .doc-tabla .c-personal { min-width: 0 !important; width: 70px; max-width: 80px; }
-      .doc-tabla .c-estado_final { text-align: center; width: 34px; }
+      .doc-tabla .c-estado_final, .doc-tabla .c-verificaciones { text-align: center; width: 34px; }
       .marca { display: inline-block; width: 15px; height: 15px; line-height: 15px; text-align: center; font-size: 10px; font-weight: 700; }
       .marca.ok { background: #e3f4ea; color: #1f7a45; }
       .marca.no { background: #fde8e7; color: #b42318; }
@@ -1168,13 +1257,51 @@ const CONFIG_REPORTE_INICIAL = {
   fuente: "",
   tamanoLetra: "1",
   pie: "Documento generado por el sistema TRUCK SHOP",
+  // Cajetín (encabezado del reporte de turno): textos de los datos del
+  // documento y tamaños (px).
+  etiquetaCodigo: "Código",
+  etiquetaRevision: "Revisión",
+  etiquetaEmitido: "Emitido",
+  cajAnchoLogo: 170,
+  cajAnchoDatos: 170,
+  cajAltoLogo: 54,
+  cajAlto: 0,
+  cajLetraEmpresa: 12,
+  cajLetraArea: 10,
+  cajLetraTitulo: 14,
+  cajLetraSubtitulo: 9.5,
+  cajLetraDatos: 9.5,
 };
+// Número de la configuración del cajetín (si falta o no es válido, el valor
+// inicial).
+function numCaj(cfg, clave) {
+  const n = Number(cfg && cfg[clave]);
+  return Number.isFinite(n) && n >= 0 ? n : CONFIG_REPORTE_INICIAL[clave];
+}
+// Medidas del cajetín para los documentos (PDF y Word) y la vista previa.
+function medidasCajetin(cfg) {
+  return {
+    anchoLogo: numCaj(cfg, "cajAnchoLogo"),
+    anchoDatos: numCaj(cfg, "cajAnchoDatos"),
+    altoLogo: numCaj(cfg, "cajAltoLogo"),
+    alto: numCaj(cfg, "cajAlto"),
+    empresa: numCaj(cfg, "cajLetraEmpresa"),
+    area: numCaj(cfg, "cajLetraArea"),
+    titulo: numCaj(cfg, "cajLetraTitulo"),
+    subtitulo: numCaj(cfg, "cajLetraSubtitulo"),
+    datos: numCaj(cfg, "cajLetraDatos"),
+    etCodigo: cfg.etiquetaCodigo ?? CONFIG_REPORTE_INICIAL.etiquetaCodigo,
+    etRevision: cfg.etiquetaRevision ?? CONFIG_REPORTE_INICIAL.etiquetaRevision,
+    etEmitido: cfg.etiquetaEmitido ?? CONFIG_REPORTE_INICIAL.etiquetaEmitido,
+  };
+}
 const registroReporte = { config: CONFIG_REPORTE_INICIAL, logoUrl: null, nombreApp: "TRUCK SHOP", color: "#4a8fe0" };
 
 function imprimirReporteTurno(trabajos, impresoPor) {
   const cfg = registroReporte.config;
   const color = registroReporte.color || "#4a8fe0";
   const emitido = fechaEmisionDoc();
+  const mc = medidasCajetin(cfg);
 
   const bloques = {};
   trabajos.forEach((t) => {
@@ -1263,9 +1390,9 @@ function imprimirReporteTurno(trabajos, impresoPor) {
               ${cfg.subtitulo ? `<div class="subtitulo">${escaparHTML(cfg.subtitulo)}</div>` : ""}
             </td>
             <td class="enc-lado enc-doc">
-              <div><span>Código</span>${escaparHTML(cfg.codigo)}</div>
-              <div><span>Revisión</span>${escaparHTML(cfg.revision)}</div>
-              <div><span>Emitido</span>${emitido}</div>
+              <div><span>${escaparHTML(mc.etCodigo)}</span>${escaparHTML(cfg.codigo)}</div>
+              <div><span>${escaparHTML(mc.etRevision)}</span>${escaparHTML(cfg.revision)}</div>
+              <div><span>${escaparHTML(mc.etEmitido)}</span>${emitido}</div>
             </td>
           </tr>
         </table>`;
@@ -1298,22 +1425,24 @@ function imprimirReporteTurno(trabajos, impresoPor) {
   abrirVistaImpresion(`<html><head><title>${escaparHTML(cfg.titulo)}</title>
     <style>
       * { -webkit-print-color-adjust: exact; print-color-adjust: exact; box-sizing: border-box; }
-      body { font-family: "Segoe UI", Inter, Roboto, Arial, sans-serif; color: #1b1f24; font-size: 10.5px; }
+      body { font-family: ${LETRA_DOC}; color: #1b1f24; font-size: 10.5px; }
       .hoja { page-break-after: always; }
       .hoja:last-child { page-break-after: auto; }
       .encabezado { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #d5d9df; margin-bottom: 12px; table-layout: fixed; }
       .encabezado td { padding: 8px 10px; vertical-align: middle; }
-      .enc-lado { width: 170px; }
+      .enc-logo { width: ${mc.anchoLogo}px; }
+      .enc-doc { width: ${mc.anchoDatos}px; }
+      ${mc.alto ? `.encabezado tr { height: ${mc.alto}px; }` : ""}
       .enc-doc div { white-space: nowrap; }
       .enc-logo { text-align: center; border-right: 1px solid #e3e6ea; }
-      .enc-doc { border-left: 1px solid #e3e6ea; font-size: 9.5px; }
-      .logo-img { max-width: 110px; max-height: 54px; object-fit: contain; }
-      .logo-ini { width: 50px; height: 50px; margin: 0 auto; background: ${color}; color: #fff; font-weight: 800; font-size: 18px; display: flex; align-items: center; justify-content: center; }
+      .enc-doc { border-left: 1px solid #e3e6ea; font-size: ${mc.datos}px; }
+      .logo-img { max-width: ${Math.max(20, mc.anchoLogo - 24)}px; max-height: ${mc.altoLogo}px; object-fit: contain; }
+      .logo-ini { width: ${Math.min(mc.altoLogo, 50)}px; height: ${Math.min(mc.altoLogo, 50)}px; margin: 0 auto; background: ${color}; color: #fff; font-weight: 800; font-size: ${Math.round(Math.min(mc.altoLogo, 50) * 0.36)}px; display: flex; align-items: center; justify-content: center; }
       .enc-centro { text-align: center; }
-      .empresa { font-size: 12px; font-weight: 400; letter-spacing: .04em; }
-      .area { font-size: 10px; color: #6b7280; margin-top: 1px; }
-      .titulo { font-size: 14px; font-weight: 400; color: ${color}; margin-top: 4px; letter-spacing: .03em; }
-      .subtitulo { font-size: 9.5px; color: #6b7280; margin-top: 2px; }
+      .empresa { font-size: ${mc.empresa}px; font-weight: 400; letter-spacing: .04em; }
+      .area { font-size: ${mc.area}px; color: #6b7280; margin-top: 1px; }
+      .titulo { font-size: ${mc.titulo}px; font-weight: 400; color: ${color}; margin-top: 4px; letter-spacing: .03em; }
+      .subtitulo { font-size: ${mc.subtitulo}px; color: #6b7280; margin-top: 2px; }
       .enc-doc div { display: flex; justify-content: space-between; gap: 8px; padding: 1.5px 0; }
       .enc-doc span { color: #6b7280; }
       .flota { margin-top: 4px; }
@@ -1351,6 +1480,73 @@ function imprimirReporteTurno(trabajos, impresoPor) {
   </head><body>${hojas || '<div class="vacio">No hay trabajos con los filtros actuales.</div>'}</body></html>`, { margen: "estrecho" });
 }
 
+// Reporte de turno en Word (.docx): mismas hojas, cajetín, tablas y pie que
+// el PDF de imprimirReporteTurno.
+function exportarWordReporteTurno(trabajos, impresoPor, nombreArchivo = "reporte_de_turno") {
+  const cfg = registroReporte.config;
+  const bloques = {};
+  trabajos.forEach((t) => {
+    const clave = `${t.fecha}|${t.turno}`;
+    (bloques[clave] = bloques[clave] || []).push(t);
+  });
+  const claves = Object.keys(bloques).sort((a, b) => {
+    const [fa, ta] = a.split("|");
+    const [fb, tb] = b.split("|");
+    return fa !== fb ? (fa < fb ? -1 : 1) : TURNO_RANGO[ta] - TURNO_RANGO[tb];
+  });
+  const fila = (t) => {
+    const lineas = (t.descripcion || "").split("\n").filter((l) => l.trim());
+    const esSubtitulo = (l) => !/^\s*-/.test(l) && l.trim() === l.trim().toUpperCase();
+    const tieneSubtitulos = lineas.some(esSubtitulo);
+    return {
+      equipo: t.equipo || "",
+      lineas: [
+        ...(!tieneSubtitulos && t.sintoma_causa ? [{ t: t.sintoma_causa, tit: true }] : []),
+        ...lineas.map((l) => ({ t: l, tit: esSubtitulo(l) })),
+      ],
+      nota: t.observaciones || "",
+      personal: t.participantes || [],
+      ubicacion: t.ubicacion || "",
+      horario: t.hora_inicio || t.hora_fin ? `${t.hora_inicio || "--:--"} – ${t.hora_fin || "--:--"}` : "",
+      ok: t.estado_final === "disponible",
+    };
+  };
+  const hojas = claves.map((clave) => {
+    const lista = bloques[clave];
+    const [fecha, turno] = clave.split("|");
+    const conteoGrupos = {};
+    lista.forEach((t) => (conteoGrupos[t.grupo] = (conteoGrupos[t.grupo] || 0) + 1));
+    const grupo = Object.keys(conteoGrupos).sort((a, b) => conteoGrupos[b] - conteoGrupos[a])[0];
+    const flotas = [...new Set([...todasLasFlotas(), ...lista.map((t) => t.flota)])].filter((f) => lista.some((t) => t.flota === f));
+    return {
+      fecha: formatoFecha(fecha),
+      turnoTexto: turno === "dia" ? "Día (06:00 – 18:00)" : "Noche (18:00 – 06:00)",
+      grupo: nombreGrupo(grupo),
+      impresoPor,
+      secciones: flotas.map((f) => {
+        const deFlota = lista.filter((t) => t.flota === f);
+        const ordenar = (l) => l.slice().sort(compararPorHorarioDeTurno).map(fila);
+        return {
+          flota: f,
+          total: deFlota.length,
+          programados: ordenar(deFlota.filter((t) => t.tipo_trabajo === "programado")),
+          noProgramados: ordenar(deFlota.filter((t) => t.tipo_trabajo !== "programado")),
+        };
+      }),
+    };
+  });
+  const ctx = {
+    ...datosFormatoDoc(),
+    iniciales: inicialesDe(registroReporte.nombreApp || cfg.empresa),
+    cfg,
+    mc: medidasCajetin(cfg),
+    emitido: fechaEmisionDoc(),
+    hojas,
+    nombreArchivo,
+  };
+  import("../lib/word").then((m) => m.wordReporteTurno(ctx)).catch(avisarErrorWord);
+}
+
 // Imprime el registro de trabajo COMPLETO de una sola intervención, en
 // formato de ficha (campo: valor), legible en una hoja impresa — a
 // diferencia de exportarPDF, que arma una tabla angosta pensada para
@@ -1364,6 +1560,7 @@ function imprimirRegistroTrabajo(trabajo) {
       ["Fecha de ingreso", fechaDoc(trabajo.fecha)],
       ["Turno", trabajo.turno === "dia" ? "Día" : "Noche"],
       ["Estado final", trabajo.estado_final === "disponible" ? "Disponible" : "No disponible"],
+      ["OT", trabajo.ot],
     ],
     campos: [
       ["Tipo de trabajo", trabajo.tipo_trabajo === "programado" ? "Programado" : "No programado"],
@@ -1406,6 +1603,9 @@ function imprimirRegistroAceite(aceite) {
       ["Tiempo de trabajo", calcularTiempoTrabajo(aceite.hora_inicio, aceite.hora_fin)],
     ],
     bloques: [
+      ...(aceite.tipo_operacion === "adicion" && aceite.verificaciones
+        ? [["Verificaciones", VERIFICACIONES_ADICION.map(([k, t]) => `${aceite.verificaciones[k] ? "☑" : "☐"} ${t}`).join("\n")]]
+        : []),
       ["Personal participante", (aceite.participantes || []).join(", ")],
       ["Observaciones", aceite.observaciones],
     ],
@@ -1434,6 +1634,7 @@ function imprimirRegistroRequerimiento(req) {
 
 
 const COLUMNAS_EXPORT_TRABAJOS = [
+  { clave: "ot", titulo: "OT" },
   { clave: "equipo", titulo: "Equipo" },
   { clave: "flota", titulo: "Flota" },
   { clave: "tipo_trabajo", titulo: "Tipo" },
@@ -1475,9 +1676,18 @@ const COLUMNAS_EXPORT_ACEITES = [
   { clave: "horometro", titulo: "Horómetro" },
   { clave: "hora_inicio", titulo: "Hora inicio" },
   { clave: "hora_fin", titulo: "Hora fin" },
+  { clave: "verificaciones", titulo: "Verificaciones" },
   { clave: "personal", titulo: "Personal participante" },
   { clave: "observaciones", titulo: "Observaciones" },
 ];
+
+// Verificaciones de una adición: "✓" (las tres marcadas), "✗" (falta
+// alguna) o vacío (cambio y derrame).
+function textoVerificaciones(a) {
+  if (a.tipo_operacion !== "adicion") return "";
+  const v = a.verificaciones || {};
+  return VERIFICACIONES_ADICION.every(([k]) => v[k]) ? "✓" : "✗";
+}
 
 function filasExportAceites(aceites) {
   return aceites.map((a) => ({
@@ -1485,6 +1695,7 @@ function filasExportAceites(aceites) {
     turno: a.turno === "dia" ? "Día" : "Noche",
     tipo_trabajo: a.tipo_trabajo === "programado" ? "Programado" : "No programado",
     tipo_operacion: textoOperacionAceite(a.tipo_operacion),
+    verificaciones: textoVerificaciones(a),
     personal: (a.participantes || []).join(", "),
   }));
 }
@@ -1749,7 +1960,7 @@ export default function TruckShopApp() {
     }
     asegurarMeta("theme-color").setAttribute("content", color);
     asegurarMeta("msapplication-navbutton-color").setAttribute("content", color);
-    asegurarMeta("apple-mobile-web-app-status-bar-style").setAttribute("content", panelIzquierdoTema === "oscuro" ? "black" : "default");
+    asegurarMeta("apple-mobile-web-app-status-bar-style").setAttribute("content", panelIzquierdoTema === "oscuro" ? "black-translucent" : "default");
     document.documentElement.style.backgroundColor = color;
   }, [panelIzquierdoTema]);
   const [fuenteFamilia, setFuenteFamilia] = useState(FUENTES_DISPONIBLES[0].valor);
@@ -1780,6 +1991,22 @@ export default function TruckShopApp() {
   const datosUsuario = perfil
     ? { nombre: perfil.nombre, usuario: perfil.usuario }
     : { nombre: "", usuario: (sesion && sesion.user && sesion.user.email) || "" };
+  usuarioEnSesion.nombre = datosUsuario.nombre;
+  usuarioEnSesion.usuario = datosUsuario.usuario;
+  usuarioEnSesion.esAdmin = esAdmin;
+
+  // Registro releído después de que otra persona lo editó (ver ModalFormulario).
+  useEffect(() => {
+    function alRecargar(e) {
+      const { tabla, fila } = e.detail || {};
+      const poner = (prev) => prev.map((r) => (r.id === fila.id ? fila : r));
+      if (tabla === "trabajos") setTrabajos(poner);
+      if (tabla === "aceites") setAceites(poner);
+      if (tabla === "requerimientos") setRequerimientos(poner);
+    }
+    window.addEventListener("ts-registro-recargado", alRecargar);
+    return () => window.removeEventListener("ts-registro-recargado", alRecargar);
+  }, []);
 
   // -- Aspecto visible en la pantalla de inicio de sesión (nombre y logo) --
   function aplicarAspecto(a) {
@@ -2351,10 +2578,51 @@ export default function TruckShopApp() {
   // barra de navegación inferior (como Gmail); al deslizar hacia arriba o
   // llegar al inicio vuelven a aparecer.
   const [barrasOcultas, setBarrasOcultas] = useState(false);
+
+  // Panel lateral (computadora): expandido, contraído (solo íconos) o
+  // contraído que se expande al pasar el cursor. Se recuerda en este
+  // navegador.
+  const [modoLateral, setModoLateral] = useState(() => {
+    try {
+      const v = window.localStorage.getItem("ts-modo-lateral");
+      return ["expandido", "contraido", "hover"].includes(v) ? v : "expandido";
+    } catch (e) {
+      return "expandido";
+    }
+  });
+  const [menuLateralAbierto, setMenuLateralAbierto] = useState(false);
+  const refMenuLateral = useRef(null);
+  function elegirModoLateral(v) {
+    setModoLateral(v);
+    setMenuLateralAbierto(false);
+    try {
+      window.localStorage.setItem("ts-modo-lateral", v);
+    } catch (e) {}
+  }
+  useEffect(() => {
+    if (!menuLateralAbierto) return;
+    function fuera(e) {
+      if (refMenuLateral.current && !refMenuLateral.current.contains(e.target)) setMenuLateralAbierto(false);
+    }
+    function tecla(e) {
+      if (e.key === "Escape") setMenuLateralAbierto(false);
+    }
+    document.addEventListener("mousedown", fuera);
+    document.addEventListener("keydown", tecla);
+    return () => {
+      document.removeEventListener("mousedown", fuera);
+      document.removeEventListener("keydown", tecla);
+    };
+  }, [menuLateralAbierto]);
+  // Celular: al deslizar, las barras superior e inferior se vuelven
+  // semitransparentes ("desplazado"); al deslizar hacia abajo la barra
+  // inferior además se oculta y vuelve a aparecer al deslizar hacia arriba.
+  const [desplazado, setDesplazado] = useState(false);
   useEffect(() => {
     let ultimaY = window.scrollY;
     function alDesplazar() {
       const y = window.scrollY;
+      setDesplazado(y >= 40);
       if (y < 40) setBarrasOcultas(false);
       else if (y > ultimaY + 6) setBarrasOcultas(true);
       else if (y < ultimaY - 6) setBarrasOcultas(false);
@@ -2363,7 +2631,22 @@ export default function TruckShopApp() {
     window.addEventListener("scroll", alDesplazar, { passive: true });
     return () => window.removeEventListener("scroll", alDesplazar);
   }, []);
-  useEffect(() => setBarrasOcultas(false), [vista]);
+  useEffect(() => {
+    setBarrasOcultas(false);
+    setDesplazado(window.scrollY >= 40);
+  }, [vista]);
+  // Barra de estado del sistema (la de la hora): mismo color del panel
+  // izquierdo y, al deslizar, el mismo tono semitransparente que la barra
+  // superior de la app.
+  useEffect(() => {
+    const opcion = OPCIONES_PANEL_IZQUIERDO.find((o) => o.clave === panelIzquierdoTema) || OPCIONES_PANEL_IZQUIERDO[0];
+    const fondoPagina = temaApp === "oscuro" ? "#14181c" : temaApp === "claro" ? "#f7f5f3" : "#ffffff";
+    const color = desplazado ? mezclarColores(opcion.bg, fondoPagina, 0.55) : opcion.bg;
+    ["theme-color", "msapplication-navbutton-color"].forEach((nombre) => {
+      const meta = document.querySelector(`meta[name="${nombre}"]`);
+      if (meta) meta.setAttribute("content", color);
+    });
+  }, [desplazado, panelIzquierdoTema, temaApp]);
   // Al cambiar de pestaña se cierra la búsqueda
   useEffect(() => {
     setBuscadorAbierto(false);
@@ -2372,7 +2655,14 @@ export default function TruckShopApp() {
 
   return (
     <div
-      className={"ts-root" + (barrasOcultas ? " ts-barras-ocultas" : "")}
+      className={
+        "ts-root" +
+        (barrasOcultas ? " ts-barras-ocultas" : "") +
+        (desplazado ? " ts-desplazado" : "") +
+        (modoLateral !== "expandido" ? " ts-lateral-contraido" : "") +
+        (modoLateral === "hover" ? " ts-lateral-hover" : "") +
+        (menuLateralAbierto ? " ts-lateral-menu-abierto" : "")
+      }
       style={{
         "--amber": colorAcento,
         "--amber-dim": colorAcento + "26",
@@ -2427,11 +2717,46 @@ export default function TruckShopApp() {
               key={item.key}
               className={"ts-nav-item" + (vistaActiva === item.key ? " ts-nav-item-activo" : "")}
               onClick={() => setVista(item.key)}
+              title={modoLateral === "contraido" ? item.label : undefined}
             >
-              {item.label}
+              <span className="ts-nav-icono">
+                <IconoLateral clave={item.key} />
+              </span>
+              <span className="ts-nav-texto">{item.label}</span>
             </button>
           ))}
         </nav>
+        {/* Control del panel lateral */}
+        <div className="ts-lateral-pie" ref={refMenuLateral}>
+          {menuLateralAbierto && (
+            <div className="ts-lateral-menu" role="menu">
+              <div className="ts-lateral-menu-titulo">Control del panel lateral</div>
+              {MODOS_PANEL_LATERAL.map(([v, n]) => (
+                <button
+                  key={v}
+                  type="button"
+                  role="menuitemradio"
+                  aria-checked={modoLateral === v}
+                  className={"ts-lateral-menu-op" + (modoLateral === v ? " ts-lateral-menu-op-activa" : "")}
+                  onClick={() => elegirModoLateral(v)}
+                >
+                  <span className="ts-lateral-menu-punto" />
+                  {n}
+                </button>
+              ))}
+            </div>
+          )}
+          <button
+            type="button"
+            className="ts-lateral-boton"
+            title="Control del panel lateral"
+            aria-label="Control del panel lateral"
+            aria-expanded={menuLateralAbierto}
+            onClick={() => setMenuLateralAbierto((v) => !v)}
+          >
+            <IconoLateral clave="panel" />
+          </button>
+        </div>
       </aside>
 
       <div className="ts-main">
@@ -2700,7 +3025,7 @@ export default function TruckShopApp() {
             onClick={() => setVista(item.key)}
           >
             <span className="ts-bottom-nav-icono">
-              <IconoNav clave={item.key} />
+              <IconoLateral clave={item.key} />
             </span>
             <span className="ts-bottom-nav-texto">{item.label}</span>
           </button>
@@ -2972,6 +3297,47 @@ const ICONOS_NAV = {
     "M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.7 1.7 0 0 0-1-1.6 1.7 1.7 0 0 0-1.9.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.7 1.7 0 0 0 1.6-1 1.7 1.7 0 0 0-.3-1.9l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.7 1.7 0 0 0 1 1.5 1.7 1.7 0 0 0 1.9-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.9V9a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.7 1.7 0 0 0-1.5 1Z M12 8.6a3.4 3.4 0 1 0 0 6.8a3.4 3.4 0 1 0 0-6.8Z"
   ],
 };
+
+// Íconos de línea del panel lateral (computadora), estilo delgado.
+const ICONOS_LATERAL = {
+  dashboard: ["M3.5 10.5 12 3.5l8.5 7", "M5.5 9v11h4.5v-6h4v6h4.5V9"],
+  trabajos: [
+    "M9 11a3.2 3.2 0 1 0 0-6.4A3.2 3.2 0 0 0 9 11Z",
+    "M3 20v-1.2c0-2.7 2.7-4.6 6-4.6s6 1.9 6 4.6V20",
+    "M15.5 4.8a3.1 3.1 0 0 1 0 6",
+    "M17.5 14.4c2.1.5 3.5 2 3.5 4.1V20",
+  ],
+  aceites: ["M12 3.2c-2 2.6-6 7.4-6 11a6 6 0 0 0 12 0c0-3.6-4-8.4-6-11Z", "M9.2 15.2a2.9 2.9 0 0 0 2.3 2.6"],
+  requerimientos: [
+    "M9 4.5H7a1.8 1.8 0 0 0-1.8 1.8v13.4A1.8 1.8 0 0 0 7 21.5h10a1.8 1.8 0 0 0 1.8-1.8V6.3A1.8 1.8 0 0 0 17 4.5h-2",
+    "M9.5 3h5a.8.8 0 0 1 .8.8v1.4a.8.8 0 0 1-.8.8h-5a.8.8 0 0 1-.8-.8V3.8a.8.8 0 0 1 .8-.8Z",
+    "M8.8 11h6.4", "M8.8 15h6.4",
+  ],
+  historial: ["M3.6 12a8.4 8.4 0 1 0 2.5-6", "M3.5 3.8v4.4h4.4", "M12 7.6V12l3 2.2"],
+  config: [
+    "M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z",
+    "M19.2 14.6a1.4 1.4 0 0 0 .3 1.6l.1.1a1.8 1.8 0 1 1-2.5 2.5l-.1-.1a1.4 1.4 0 0 0-1.6-.3 1.4 1.4 0 0 0-.9 1.3v.2a1.8 1.8 0 0 1-3.6 0v-.1a1.4 1.4 0 0 0-.9-1.3 1.4 1.4 0 0 0-1.6.3l-.1.1a1.8 1.8 0 1 1-2.5-2.5l.1-.1a1.4 1.4 0 0 0 .3-1.6 1.4 1.4 0 0 0-1.3-.9h-.2a1.8 1.8 0 0 1 0-3.6h.1a1.4 1.4 0 0 0 1.3-.9 1.4 1.4 0 0 0-.3-1.6l-.1-.1a1.8 1.8 0 1 1 2.5-2.5l.1.1a1.4 1.4 0 0 0 1.6.3h.1a1.4 1.4 0 0 0 .8-1.3v-.2a1.8 1.8 0 0 1 3.6 0v.1a1.4 1.4 0 0 0 .9 1.3 1.4 1.4 0 0 0 1.6-.3l.1-.1a1.8 1.8 0 1 1 2.5 2.5l-.1.1a1.4 1.4 0 0 0-.3 1.6v.1a1.4 1.4 0 0 0 1.3.8h.2a1.8 1.8 0 0 1 0 3.6h-.1a1.4 1.4 0 0 0-1.3.9Z",
+  ],
+  panel: ["M4.5 4.5h15a1 1 0 0 1 1 1v13a1 1 0 0 1-1 1h-15a1 1 0 0 1-1-1v-13a1 1 0 0 1 1-1Z", "M9.5 4.5v15"],
+};
+function IconoLateral({ clave }) {
+  const trazados = ICONOS_LATERAL[clave];
+  if (!trazados) return null;
+  return (
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      {trazados.map((d, i) => (
+        <path key={i} d={d} />
+      ))}
+    </svg>
+  );
+}
+
+// Opciones del control del panel lateral (computadora).
+const MODOS_PANEL_LATERAL = [
+  ["expandido", "Expandido"],
+  ["contraido", "Contraído"],
+  ["hover", "Expandir al pasar el cursor"],
+];
 
 function IconoNav({ clave }) {
   if (clave === "trabajos") return <IconoNavTrabajos />;
@@ -4131,7 +4497,16 @@ function IconoChevron({ abierto }) {
 // celular (a pantalla completa). Se cierra con la ×, con Escape o al guardar;
 // tocar fuera NO la cierra, para no perder lo escrito por accidente.
 // ---------------------------------------------------------------------------
-function ModalFormulario({ onCerrar, children }) {
+// Usuario conectado (nombre y usuario), para avisar a los demás quién está
+// editando un registro.
+const usuarioEnSesion = { nombre: "", usuario: "" };
+
+// Al editar un registro existente (bloqueo = { tabla, id }), a la izquierda
+// de la × se muestra quién lo está editando. Si otra persona ya lo está
+// editando, no se puede editar: se muestra un aviso y, cuando esa persona
+// sale del cuadro o cierra la app, se cargan los datos más recientes y se
+// habilita la edición.
+function ModalFormulario({ onCerrar, children, bloqueo = null, onRecargado }) {
   useEffect(() => {
     const anterior = document.body.style.overflow;
     document.body.style.overflow = "hidden";
@@ -4145,13 +4520,76 @@ function ModalFormulario({ onCerrar, children }) {
     };
   }, []);
 
+  const clave = bloqueo && bloqueo.id != null ? `${bloqueo.tabla}:${bloqueo.id}` : null;
+  const { estado, editor } = useBloqueoEdicion(clave, usuarioEnSesion);
+  const [version, setVersion] = useState(0);
+  const [recargando, setRecargando] = useState(false);
+  const estuvoOcupado = useRef(false);
+  useEffect(() => {
+    if (estado === "ocupado") estuvoOcupado.current = true;
+    if (estado === "propio" && estuvoOcupado.current) {
+      // La otra persona terminó: se leen sus cambios antes de editar.
+      estuvoOcupado.current = false;
+      setRecargando(true);
+      db.leerRegistro(bloqueo.tabla, bloqueo.id)
+        .then((fila) => {
+          if (fila) {
+            window.dispatchEvent(new CustomEvent("ts-registro-recargado", { detail: { tabla: bloqueo.tabla, fila } }));
+            if (onRecargado) onRecargado(fila);
+          }
+          setVersion((v) => v + 1);
+        })
+        .catch(() => {})
+        .finally(() => setRecargando(false));
+    }
+  }, [estado]);
+
+  const nombreEditor = editor ? editor.nombre || editor.usuario : "";
   return (
     <div className="ts-modal-form-fondo">
-      <div className="ts-modal-form" role="dialog" aria-modal="true">
+      <div className={"ts-modal-form" + (clave ? " ts-modal-con-editor" : "")} role="dialog" aria-modal="true">
+        {clave && (
+          <div className={"ts-modal-editor" + (estado === "ocupado" ? " ts-modal-editor-ocupado" : "")} title={editor && editor.usuario ? `Usuario: ${editor.usuario}` : undefined}>
+            <span className="ts-modal-editor-punto" />
+            {estado === "ocupado"
+              ? `En edición: ${nombreEditor}`
+              : estado === "verificando" || recargando
+              ? "Comprobando…"
+              : `Editando: ${nombreEditor}`}
+          </div>
+        )}
         <button type="button" className="ts-modal-form-cerrar" title="Cerrar sin guardar" onClick={onCerrar}>
           <IconoFabCerrar />
         </button>
-        {children}
+        {estado === "ocupado" ? (
+          <Panel titulo="Registro en edición">
+            <div className="ts-edicion-ocupada">
+              <div className="ts-edicion-ocupada-icono">
+                <IconoLateral clave="trabajos" />
+              </div>
+              <div>
+                <b>{nombreEditor}</b>
+                {editor && editor.usuario && editor.usuario !== nombreEditor ? ` (${editor.usuario})` : ""} está editando este
+                registro desde las {new Date(editor.desde).toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" })}.
+              </div>
+              <div className="ts-campo-ayuda">
+                Para no perder información, podrás editarlo cuando esa persona salga del cuadro de edición o cierre la app.
+                Esta ventana se habilitará sola, con los datos actualizados.
+              </div>
+              <div className="ts-form-acciones">
+                <button type="button" className="ts-btn-ghost" onClick={onCerrar}>
+                  Cerrar
+                </button>
+              </div>
+            </div>
+          </Panel>
+        ) : recargando ? (
+          <Panel titulo="Cargando datos actualizados…">
+            <div className="ts-edicion-ocupada">Cargando los cambios guardados por la otra persona…</div>
+          </Panel>
+        ) : (
+          <React.Fragment key={version}>{children}</React.Fragment>
+        )}
       </div>
     </div>
   );
@@ -4431,6 +4869,7 @@ function TablaTrabajos({ filas, compacta, onFilaClick, onImprimir, onEliminar, s
                     </div>
                   )}
                   <div className="ts-tm-linea">
+                    {t.ot && <span className="ts-tm-ot">OT {t.ot} · </span>}
                     <strong>{t.equipo}</strong>
                     {t.ubicacion && <> · {t.ubicacion}</>} ·{" "}
                     <span className="ts-tm-horario">
@@ -4482,9 +4921,10 @@ function TablaTrabajos({ filas, compacta, onFilaClick, onImprimir, onEliminar, s
             <th>
               <span className="ts-th-equipo">
                 {onFiltroMarca && <FiltroMarcas valor={filtroMarca || "todas"} onCambiar={onFiltroMarca} />}
-                Equipo
+                {compacta ? "Equipo" : "OT"}
               </span>
             </th>
+            {!compacta && <th>Equipo</th>}
             <th>Trabajo</th>
             {!compacta && <th>Ubicación</th>}
             {!sinFechaTurnoGrupo && <th>Fecha</th>}
@@ -4502,14 +4942,17 @@ function TablaTrabajos({ filas, compacta, onFilaClick, onImprimir, onEliminar, s
               className={(onFilaClick ? "ts-fila-clicable" : "") + (t.marca ? ` ts-marca-${t.marca}` : "")}
               onClick={onFilaClick ? () => onFilaClick(t) : undefined}
             >
+              {/* Columna OT (a la izquierda de Equipo); la bandera de marca va
+                  al inicio de la fila. */}
               <td className="ts-mono">
                 <span className="ts-td-equipo">
                   {(onMarcar || onFiltroMarca || t.marca) && (
                     <MarcadorFila marca={t.marca} onMarcar={onMarcar ? (m) => onMarcar(t.id, m) : undefined} />
                   )}
-                  {t.equipo}
+                  {compacta ? t.equipo : t.ot || <span className="ts-texto-tenue">—</span>}
                 </span>
               </td>
+              {!compacta && <td className="ts-mono">{t.equipo}</td>}
               <td>
                 <div className="ts-clamp-2 ts-trabajo-celda" title={[t.sintoma_causa, t.descripcion].filter(Boolean).join("\n")}>
                   {t.sintoma_causa && <span className="ts-trabajo-titulo">{t.sintoma_causa}</span>}
@@ -4582,6 +5025,23 @@ function BadgeTurno({ turno }) {
 // Estado del equipo como ícono: cuadro verde suave con "✓" (Disponible) o
 // cuadro rojo suave con "✕" (No disponible). El texto queda en el tooltip y para
 // lectores de pantalla.
+// Columna "Verificaciones" de Aceites: solo en ADICIÓN. ✓ si se marcaron las
+// tres verificaciones; ✕ si falta alguna. Cambio y derrame quedan en blanco.
+function IconoVerificaciones({ registro }) {
+  if (registro.tipo_operacion !== "adicion") return null;
+  const v = registro.verificaciones || {};
+  const faltan = VERIFICACIONES_ADICION.filter(([k]) => !v[k]).map(([, t]) => t);
+  const ok = faltan.length === 0;
+  const texto = ok ? "Se marcaron las tres verificaciones" : `Falta marcar: ${faltan.join("; ")}`;
+  return (
+    <span className={"ts-estado-icono " + (ok ? "ts-estado-icono-ok" : "ts-estado-icono-alerta")} title={texto} aria-label={texto} role="img">
+      <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+        {ok ? <path d="M5 12.5l4.5 4.5L19 7.5" /> : <path d="M7 7l10 10M17 7L7 17" />}
+      </svg>
+    </span>
+  );
+}
+
 function BadgeEstado({ estado }) {
   const ok = estado === "disponible";
   const texto = ok ? "Disponible" : "No disponible";
@@ -4652,7 +5112,7 @@ function Trabajos({ trabajos, onMarcar, puedeCrear, onCrear, onActualizar, onEli
     setMenuExportAbierto(false);
     const filas = filasExportTrabajos(ordenados);
     if (formato === "excel") exportarExcel(filas, COLUMNAS_EXPORT_TRABAJOS, "trabajos");
-    if (formato === "word") exportarWord(filas, COLUMNAS_EXPORT_TRABAJOS, "trabajos", "Trabajos de mantenimiento");
+    if (formato === "word") exportarWordReporteTurno(ordenados, impresoPor, "trabajos");
     if (formato === "pdf") imprimirReporteTurno(ordenados, impresoPor);
   }
 
@@ -4770,7 +5230,11 @@ function Trabajos({ trabajos, onMarcar, puedeCrear, onCrear, onActualizar, onEli
         )}
       </div>
 
-      {mostrarForm && <ModalFormulario onCerrar={cerrar}>{formularioTrabajo(editando)}</ModalFormulario>}
+      {mostrarForm && (
+        <ModalFormulario onCerrar={cerrar} bloqueo={editando ? { tabla: "trabajos", id: editando.id } : null} onRecargado={setEditando}>
+          {formularioTrabajo(editando)}
+        </ModalFormulario>
+      )}
 
       <Panel titulo="Trabajos programados">
         <TablaTrabajos
@@ -4933,6 +5397,7 @@ function FormularioTrabajo({ onGuardar, inicial, personal, equipos }) {
             <option value="disponible">Disponible</option>
             <option value="no_disponible">No disponible</option>
           </CampoSelect>
+          <CampoTexto etiqueta="OT" valor={form.ot || ""} onChange={(v) => campo("ot", v)} placeholder="N° de orden de trabajo" />
         </div>
 
         <label className="ts-campo ts-campo-full">
@@ -5211,7 +5676,11 @@ function Aceites({ registros, puedeCrear, puedeAdicion = true, puedeDerrame = tr
         )}
       </div>
 
-      {mostrarForm && <ModalFormulario onCerrar={cerrar}>{formularioAceite(editando)}</ModalFormulario>}
+      {mostrarForm && (
+        <ModalFormulario onCerrar={cerrar} bloqueo={editando ? { tabla: "aceites", id: editando.id } : null} onRecargado={setEditando}>
+          {formularioAceite(editando)}
+        </ModalFormulario>
+      )}
 
       <Panel titulo="Registros de aceite">
         {registrosFiltrados.length === 0 ? (
@@ -5239,6 +5708,7 @@ function Aceites({ registros, puedeCrear, puedeAdicion = true, puedeDerrame = tr
                   <th>Litros</th>
                   <th>Horómetro</th>
                   <th>Horario</th>
+                  <th className="ts-col-verif">Verificaciones</th>
                   <th>Personal</th>
                   <th></th>
                 </tr>
@@ -5267,6 +5737,9 @@ function Aceites({ registros, puedeCrear, puedeAdicion = true, puedeDerrame = tr
                     <td className="ts-mono">{a.cantidad_litros === "" || a.cantidad_litros == null ? "—" : `${a.cantidad_litros} L`}</td>
                     <td className="ts-mono">{a.horometro}</td>
                     <td className="ts-mono">{a.hora_inicio || "—"}{a.hora_fin ? `–${a.hora_fin}` : ""}</td>
+                    <td className="ts-col-verif">
+                      <IconoVerificaciones registro={a} />
+                    </td>
                     <td><div className="ts-clamp-2">{(a.participantes || []).join(", ") || "—"}</div></td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="ts-acciones-fila">
@@ -5323,6 +5796,14 @@ function Aceites({ registros, puedeCrear, puedeAdicion = true, puedeDerrame = tr
   );
 }
 
+// Verificaciones obligatorias antes de registrar una ADICIÓN de aceite
+// (evitan adiciones repetidas). Se guardan con el registro.
+const VERIFICACIONES_ADICION = [
+  ["pm", "Se verificó fecha de próximo PM"],
+  ["adiciones", "Se verificó últimas adiciones del aceite"],
+  ["supervision", "Se coordinó con supervisión la adición de aceite"],
+];
+
 function FormularioAceite({ onGuardar, inicial, tiposAceite, sistemasEquipo, personal, equipos, puedeAdicion = true, puedeDerrame = true }) {
   const [form, setForm] = useState(
     inicial
@@ -5363,6 +5844,17 @@ function FormularioAceite({ onGuardar, inicial, tiposAceite, sistemasEquipo, per
     });
   }
 
+  // Personal eventual de apoyo (nombre libre), igual que en Trabajos.
+  const [apoyo, setApoyo] = useState("");
+  function agregarApoyo() {
+    const nombre = apoyo.trim().replace(/\s+/g, " ");
+    if (!nombre) return;
+    setForm((prev) =>
+      prev.participantes.includes(nombre) ? prev : { ...prev, participantes: [...prev.participantes, nombre] }
+    );
+    setApoyo("");
+  }
+
   const esDerrame = form.tipo_operacion === "derrame";
   const flotaEquipo = equipos.find((eq) => eq.codigo === form.equipo)?.flota || "";
   // Al pasar entre derrame y adición/cambio, el personal elegido ya no
@@ -5378,8 +5870,23 @@ function FormularioAceite({ onGuardar, inicial, tiposAceite, sistemasEquipo, per
     ? [...new Set([...personalPorGrupo(personal, form.grupo, flotaEquipo), ...form.participantes])]
     : personalLubricacion(personal);
 
+  const esAdicion = form.tipo_operacion === "adicion";
+  const verificaciones = form.verificaciones || {};
+  // Obligatorias al registrar una adición nueva (o al cambiar un registro a adición).
+  const exigirVerificaciones = esAdicion && (!inicial || inicial.tipo_operacion !== "adicion" || !!inicial.verificaciones);
+  const faltanVerificaciones = exigirVerificaciones && VERIFICACIONES_ADICION.some(([k]) => !verificaciones[k]);
+  const [avisoVerificar, setAvisoVerificar] = useState(false);
+  function marcarVerificacion(k, v) {
+    setAvisoVerificar(false);
+    setForm((prev) => ({ ...prev, verificaciones: { ...(prev.verificaciones || {}), [k]: v } }));
+  }
+
   function enviar(e) {
     e.preventDefault();
+    if (faltanVerificaciones) {
+      setAvisoVerificar(true);
+      return;
+    }
     const equipo = equipos.find((eq) => eq.codigo === form.equipo);
     // El derrame se guarda en la misma tabla que adiciones y cambios; los
     // campos que no aplican quedan vacíos.
@@ -5430,6 +5937,23 @@ function FormularioAceite({ onGuardar, inicial, tiposAceite, sistemasEquipo, per
               ))}
           </div>
         </div>
+        {/* Solo en ADICIÓN: verificaciones que el personal de Lubrico debe
+            marcar antes de guardar. Ocupa dos columnas de la misma grilla
+            que los campos de abajo, para quedar alineado con ellos. */}
+        {esAdicion && (
+          <div className="ts-form-grid ts-grid-verificaciones">
+            <div className={"ts-verificaciones" + (avisoVerificar ? " ts-verificaciones-aviso" : "")}>
+              <span className="ts-verificaciones-titulo">Verificaciones antes de la adición</span>
+              {VERIFICACIONES_ADICION.map(([k, texto]) => (
+                <label key={k} className="ts-verificacion">
+                  <span>{texto}</span>
+                  <input type="checkbox" checked={!!verificaciones[k]} onChange={(e) => marcarVerificacion(k, e.target.checked)} />
+                </label>
+              ))}
+              {avisoVerificar && <span className="ts-verificaciones-error">Marca las tres verificaciones para registrar la adición.</span>}
+            </div>
+          </div>
+        )}
         <div className="ts-form-grid">
           <CampoSelect etiqueta="Equipo" valor={form.equipo} onChange={(v) => campo("equipo", v)}>
             {equipos.filter((e) => e.activo).map((e) => (
@@ -5534,9 +6058,32 @@ function FormularioAceite({ onGuardar, inicial, tiposAceite, sistemasEquipo, per
           </div>
           <span className="ts-campo-ayuda">
             {esDerrame
-              ? "Personal del grupo y la flota del equipo seleccionados."
+              ? `Mostrando ${nombreGrupo(form.grupo)}${["conjunto", "todas"].includes((grupoPorId(form.grupo) || {}).alcance) ? " – todas las flotas" : flotaEquipo ? ` – ${flotaEquipo}` : ""}.`
               : `Solo personal del grupo ${tituloSeccion("lubrico")} está autorizado para esta operación.`}
           </span>
+          {/* Derrame: personal eventual de apoyo escrito a mano, igual que en
+              el registro de trabajo. Queda como participante (chip marcado). */}
+          {esDerrame && (
+            <div className="ts-apoyo">
+              <input
+                type="text"
+                value={apoyo}
+                placeholder="Personal de apoyo"
+                aria-label="Personal de apoyo"
+                onChange={(e) => setApoyo(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    e.stopPropagation();
+                    agregarApoyo();
+                  }
+                }}
+              />
+              <button type="button" className="ts-btn-icono" onClick={agregarApoyo} disabled={!apoyo.trim()}>
+                + Agregar
+              </button>
+            </div>
+          )}
         </div>
 
         <label className="ts-campo ts-campo-full">
@@ -5771,7 +6318,11 @@ function Requerimientos({
         )}
       </div>
 
-      {mostrarForm && <ModalFormulario onCerrar={cerrar}>{formularioRequerimiento(editando)}</ModalFormulario>}
+      {mostrarForm && (
+        <ModalFormulario onCerrar={cerrar} bloqueo={editando ? { tabla: "requerimientos", id: editando.id } : null} onRecargado={setEditando}>
+          {formularioRequerimiento(editando)}
+        </ModalFormulario>
+      )}
 
       <Panel titulo="Requerimientos">
         {/* Celular: tarjetas compactas (3 líneas por requerimiento) */}
@@ -6156,6 +6707,7 @@ function DetalleTrabajo({ trabajo: t, onCerrar }) {
     <ModalFormulario onCerrar={onCerrar}>
       <Panel titulo={`Trabajo — ${t.equipo} · Flota ${t.flota}`}>
         <div className="ts-detalle-grid">
+          {dato("OT", t.ot, "ts-mono")}
           {dato("Fecha", formatoFecha(t.fecha), "ts-mono")}
           {dato("Turno", textoTurno(t.turno))}
           {dato("Grupo", nombreGrupo(t.grupo))}
@@ -6654,6 +7206,7 @@ function Historial({ trabajos, aceites, equipos }) {
                   <th>Litros</th>
                   <th>Horómetro</th>
                   <th>Horario</th>
+                  <th className="ts-col-verif">Verificaciones</th>
                   <th>Personal</th>
                   <th></th>
                 </tr>
@@ -6678,6 +7231,9 @@ function Historial({ trabajos, aceites, equipos }) {
                     <td className="ts-mono">{a.cantidad_litros === "" || a.cantidad_litros == null ? "—" : `${a.cantidad_litros} L`}</td>
                     <td className="ts-mono">{a.horometro}</td>
                     <td className="ts-mono">{a.hora_inicio || "—"}{a.hora_fin ? `–${a.hora_fin}` : ""}</td>
+                    <td className="ts-col-verif">
+                      <IconoVerificaciones registro={a} />
+                    </td>
                     <td><div className="ts-clamp-2">{(a.participantes || []).join(", ") || "—"}</div></td>
                     <td onClick={(e) => e.stopPropagation()}>
                       <div className="ts-acciones-fila">
@@ -6726,6 +7282,26 @@ function PanelConfigReporte({ config, onCambiar, trabajos, usuario }) {
       <input type="text" value={config[clave]} placeholder={placeholder} onChange={(e) => campo(clave)(e.target.value)} />
     </label>
   );
+  // Medida del cajetín en px (campo numérico).
+  const numero = (clave, etiqueta, min, max, paso = 1) => (
+    <label className="ts-campo">
+      <span>{etiqueta}</span>
+      <div className="ts-campo-px">
+        <input
+          type="number"
+          min={min}
+          max={max}
+          step={paso}
+          value={config[clave] ?? CONFIG_REPORTE_INICIAL[clave]}
+          onChange={(e) => campo(clave)(e.target.value === "" ? "" : Number(e.target.value))}
+        />
+        <em>px</em>
+      </div>
+    </label>
+  );
+  const mc = medidasCajetin(config);
+  const colorDoc = registroReporte.color || "#4a8fe0";
+  const ladoLogo = Math.min(mc.altoLogo, 50);
   const casilla = (clave, etiqueta) => (
     <label className="ts-campo ts-check">
       <input type="checkbox" checked={!!config[clave]} onChange={(e) => campo(clave)(e.target.checked)} />
@@ -6777,7 +7353,60 @@ function PanelConfigReporte({ config, onCambiar, trabajos, usuario }) {
         </label>
       </div>
       <div className="ts-campo-full">{texto("pie", "Pie de página", "Ej. Documento generado por TRUCK SHOP")}</div>
-      <div className="ts-config-reporte-opciones">
+
+      {/* Cajetín: textos de los datos del documento y todos sus tamaños, con
+          vista previa en vivo. */}
+      <div className="ts-cajetin-config">
+        <div className="ts-cajetin-titulo">Cajetín del reporte</div>
+        <div className="ts-cajetin-previa" aria-label="Vista previa del cajetín">
+          <table style={{ height: mc.alto ? mc.alto : undefined }}>
+            <tbody>
+              <tr>
+                <td className="ts-cp-logo" style={{ width: mc.anchoLogo }}>
+                  {registroReporte.logoUrl ? (
+                    <img src={registroReporte.logoUrl} alt="logo" style={{ maxWidth: Math.max(20, mc.anchoLogo - 24), maxHeight: mc.altoLogo }} />
+                  ) : (
+                    <div
+                      className="ts-cp-ini"
+                      style={{ width: ladoLogo, height: ladoLogo, background: colorDoc, fontSize: Math.round(ladoLogo * 0.36) }}
+                    >
+                      {inicialesDe(registroReporte.nombreApp || config.empresa)}
+                    </div>
+                  )}
+                </td>
+                <td className="ts-cp-centro">
+                  <div style={{ fontSize: mc.empresa, letterSpacing: ".04em" }}>{config.empresa}</div>
+                  <div style={{ fontSize: mc.area, color: "#6b7280", marginTop: 1 }}>{config.area}</div>
+                  <div style={{ fontSize: mc.titulo, color: colorDoc, marginTop: 4, letterSpacing: ".03em" }}>{config.titulo}</div>
+                  {config.subtitulo && <div style={{ fontSize: mc.subtitulo, color: "#6b7280", marginTop: 2 }}>{config.subtitulo}</div>}
+                </td>
+                <td className="ts-cp-doc" style={{ width: mc.anchoDatos, fontSize: mc.datos }}>
+                  <div><span>{mc.etCodigo}</span>{config.codigo}</div>
+                  <div><span>{mc.etRevision}</span>{config.revision}</div>
+                  <div><span>{mc.etEmitido}</span>{fechaEmisionDoc()}</div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <div className="ts-cajetin-sub">Descripciones</div>
+        <div className="ts-form-grid">
+          {texto("etiquetaCodigo", "Descripción de «Código»", "Ej. Código")}
+          {texto("etiquetaRevision", "Descripción de «Revisión»", "Ej. Revisión")}
+          {texto("etiquetaEmitido", "Descripción de «Emitido»", "Ej. Emitido")}
+        </div>
+        <div className="ts-cajetin-sub">Tamaños</div>
+        <div className="ts-form-grid ts-form-grid-3">
+          {numero("cajAnchoLogo", "Ancho del lado del logo", 60, 320)}
+          {numero("cajAnchoDatos", "Ancho del lado de datos", 100, 320)}
+          {numero("cajAltoLogo", "Alto del logo", 20, 120)}
+          {numero("cajAlto", "Alto mínimo del cajetín (0 = automático)", 0, 220)}
+          {numero("cajLetraEmpresa", "Letra: empresa", 6, 30, 0.5)}
+          {numero("cajLetraArea", "Letra: área", 6, 30, 0.5)}
+          {numero("cajLetraTitulo", "Letra: título", 6, 36, 0.5)}
+          {numero("cajLetraSubtitulo", "Letra: subtítulo", 6, 30, 0.5)}
+          {numero("cajLetraDatos", "Letra: Código, Revisión y Emitido", 6, 24, 0.5)}
+        </div>
       </div>
       <div className="ts-form-acciones">
         <button type="button" className="ts-btn-ghost" onClick={() => onCambiar(CONFIG_REPORTE_INICIAL)}>
@@ -6787,6 +7416,262 @@ function PanelConfigReporte({ config, onCambiar, trabajos, usuario }) {
           Ver vista previa
         </button>
       </div>
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Configuración → Almacenamiento (solo Administrador): espacio usado por la
+// base de datos y por los archivos (imágenes de los registros, en el futuro),
+// frente al límite del plan de Supabase, con el historial de uso en un
+// gráfico y una estimación de cuándo se llenaría. Cada día que el
+// Administrador abre este cuadro se guarda una medición (configuración
+// "almacenamiento").
+// ---------------------------------------------------------------------------
+const LIMITES_ALMACENAMIENTO_INICIAL = { base_mb: 500, archivos_mb: 1024 };
+const NOMBRES_TABLAS = {
+  trabajos: "Trabajos",
+  aceites: "Aceites",
+  requerimientos: "Requerimientos",
+  perfiles: "Personal (usuarios)",
+  equipos: "Equipos",
+  configuracion: "Configuración",
+  tipos_aceite: "Tipos de aceite",
+  sistemas_equipo: "Sistemas de equipo",
+  grupos_trabajo: "Grupos",
+};
+function textoBytes(b) {
+  const n = Number(b) || 0;
+  if (n < 1024 * 1024) return `${Math.max(0, Math.round(n / 1024))} KB`;
+  if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
+  return `${(n / 1024 / 1024 / 1024).toFixed(2)} GB`;
+}
+function hoyISO() {
+  const d = new Date();
+  const p = (x) => String(x).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+function MedidorAlmacenamiento({ titulo, usado, limiteMb, detalle }) {
+  const limite = limiteMb * 1024 * 1024;
+  const pct = limite > 0 ? (usado / limite) * 100 : 0;
+  const nivel = pct >= 90 ? "rojo" : pct >= 70 ? "amarillo" : "verde";
+  return (
+    <div className="ts-alm-medidor">
+      <div className="ts-alm-medidor-cab">
+        <span>{titulo}</span>
+        <b>{pct < 0.1 && usado > 0 ? "< 0.1" : (Math.round(pct * 10) / 10).toString()} %</b>
+      </div>
+      <div className="ts-alm-barra">
+        <div className={"ts-alm-barra-uso ts-alm-" + nivel} style={{ width: `${Math.min(100, Math.max(pct, usado > 0 ? 0.6 : 0))}%` }} />
+      </div>
+      <div className="ts-alm-medidor-pie">
+        {textoBytes(usado)} de {limiteMb >= 1024 ? `${(limiteMb / 1024).toFixed(limiteMb % 1024 ? 1 : 0)} GB` : `${limiteMb} MB`}
+        {detalle ? ` · ${detalle}` : ""}
+      </div>
+      {nivel !== "verde" && (
+        <div className={"ts-alm-alerta ts-alm-alerta-" + nivel}>
+          {nivel === "rojo"
+            ? "Espacio casi lleno: libera espacio o amplía el plan de Supabase."
+            : "Más del 70 % usado: conviene planificar."}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Gráfico de líneas del uso (MB) por día.
+function GraficoAlmacenamiento({ historial }) {
+  if (!historial || historial.length < 2) {
+    return <div className="ts-campo-ayuda">El gráfico aparecerá cuando haya mediciones de al menos dos días distintos.</div>;
+  }
+  const W = 640, H = 190, mI = 46, mD = 12, mS = 12, mA = 28;
+  const pts = historial.map((h) => ({ f: h.f, b: (h.b || 0) / 1048576, a: (h.a || 0) / 1048576 }));
+  const maxY = Math.max(1, ...pts.map((p) => Math.max(p.b, p.a))) * 1.15;
+  const x = (i) => mI + (i * (W - mI - mD)) / (pts.length - 1);
+  const y = (v) => mS + (H - mS - mA) * (1 - v / maxY);
+  const linea = (k) => pts.map((p, i) => `${i ? "L" : "M"}${x(i).toFixed(1)},${y(p[k]).toFixed(1)}`).join(" ");
+  const marcasY = [0, 0.25, 0.5, 0.75, 1].map((t) => maxY * t);
+  const etiquetasX = [0, Math.floor((pts.length - 1) / 2), pts.length - 1];
+  const fecha = (f) => f.split("-").reverse().slice(0, 2).join("/");
+  const hayArchivos = pts.some((p) => p.a > 0);
+  return (
+    <div className="ts-alm-grafico">
+      <svg viewBox={`0 0 ${W} ${H}`} role="img" aria-label="Uso de almacenamiento por día">
+        {marcasY.map((v, i) => (
+          <g key={i}>
+            <line x1={mI} x2={W - mD} y1={y(v)} y2={y(v)} className="ts-alm-rejilla" />
+            <text x={mI - 6} y={y(v) + 3.5} textAnchor="end" className="ts-alm-eje">
+              {v >= 10 ? Math.round(v) : v.toFixed(1)} MB
+            </text>
+          </g>
+        ))}
+        {etiquetasX.map((i) => (
+          <text key={i} x={x(i)} y={H - 8} textAnchor={i === 0 ? "start" : i === pts.length - 1 ? "end" : "middle"} className="ts-alm-eje">
+            {fecha(pts[i].f)}
+          </text>
+        ))}
+        <path d={linea("b")} className="ts-alm-linea-base" />
+        {hayArchivos && <path d={linea("a")} className="ts-alm-linea-archivos" />}
+        {pts.map((p, i) => (
+          <circle key={i} cx={x(i)} cy={y(p.b)} r="2.6" className="ts-alm-punto-base">
+            <title>{`${fecha(p.f)} · Base de datos: ${p.b.toFixed(1)} MB${hayArchivos ? ` · Archivos: ${p.a.toFixed(1)} MB` : ""}`}</title>
+          </circle>
+        ))}
+      </svg>
+      <div className="ts-alm-leyenda">
+        <span><i className="ts-alm-ley-base" /> Base de datos</span>
+        {hayArchivos && <span><i className="ts-alm-ley-archivos" /> Archivos</span>}
+      </div>
+    </div>
+  );
+}
+
+// Estimación: crecimiento por mes y cuándo se alcanzaría el límite.
+function estimacionLlenado(historial, clave, limiteMb) {
+  if (!historial || historial.length < 2) return null;
+  const a = historial[0];
+  const z = historial[historial.length - 1];
+  const dias = (new Date(z.f) - new Date(a.f)) / 86400000;
+  if (dias < 7) return { texto: "Se necesitan al menos 7 días de mediciones para estimar el crecimiento." };
+  const porDia = ((z[clave] || 0) - (a[clave] || 0)) / dias;
+  const porMesMb = (porDia * 30) / 1048576;
+  if (porDia <= 0) return { texto: "Sin crecimiento en el periodo medido." };
+  const restante = limiteMb * 1048576 - (z[clave] || 0);
+  const meses = restante / porDia / 30;
+  const cuando = meses > 120 ? "más de 10 años" : meses >= 24 ? `unos ${Math.round(meses / 12)} años` : `unos ${Math.max(1, Math.round(meses))} meses`;
+  return { texto: `Crece unos ${porMesMb < 1 ? porMesMb.toFixed(2) : porMesMb.toFixed(1)} MB por mes; a ese ritmo el límite se alcanzaría en ${cuando}.` };
+}
+
+function CuerpoAlmacenamiento() {
+  const [uso, setUso] = useState(null);
+  const [error, setError] = useState("");
+  const [cargando, setCargando] = useState(false);
+  const [cfg, setCfg] = useState({ limites: LIMITES_ALMACENAMIENTO_INICIAL, historial: [] });
+
+  async function medir() {
+    setCargando(true);
+    setError("");
+    try {
+      const [u, guardado] = await Promise.all([db.usoAlmacenamiento(), db.leerConfig("almacenamiento").catch(() => null)]);
+      const limites = { ...LIMITES_ALMACENAMIENTO_INICIAL, ...((guardado && guardado.limites) || {}) };
+      let historial = ((guardado && guardado.historial) || []).filter((h) => h && h.f);
+      // Una medición por día (la última del día reemplaza a la anterior).
+      const hoy = hoyISO();
+      const punto = { f: hoy, b: Number(u.base_bytes) || 0, a: Number(u.archivos_bytes) || 0 };
+      historial = [...historial.filter((h) => h.f !== hoy), punto].sort((p, q) => (p.f < q.f ? -1 : 1)).slice(-730);
+      const nuevo = { limites, historial };
+      setUso(u);
+      setCfg(nuevo);
+      db.guardarConfig("almacenamiento", nuevo).catch(() => {});
+    } catch (e) {
+      const m = String((e && e.message) || e);
+      setError(
+        /uso_almacenamiento|function|could not find/i.test(m)
+          ? "Falta instalar el control de almacenamiento: ejecuta una vez el archivo supabase/4_almacenamiento.sql en Supabase → SQL Editor."
+          : m
+      );
+    } finally {
+      setCargando(false);
+    }
+  }
+  // Se mide al abrir el cuadro (el contenido se crea al desplegarlo).
+  useEffect(() => {
+    medir();
+  }, []);
+
+  function cambiarLimite(clave, v) {
+    const n = Math.max(1, Number(v) || 0);
+    const nuevo = { ...cfg, limites: { ...cfg.limites, [clave]: n } };
+    setCfg(nuevo);
+    db.guardarConfig("almacenamiento", nuevo).catch(() => {});
+  }
+
+  const lim = cfg.limites || LIMITES_ALMACENAMIENTO_INICIAL;
+  const estBase = estimacionLlenado(cfg.historial, "b", lim.base_mb);
+  const tablas = (uso && uso.tablas) || [];
+  const maxTabla = Math.max(1, ...tablas.map((t) => Number(t.bytes) || 0));
+
+  return (
+    <>
+      <div className="ts-campo-ayuda" style={{ marginBottom: 12 }}>
+        Espacio usado en Supabase frente al límite del plan. Cada día que abres este cuadro se guarda una medición para ver
+        el crecimiento. El tráfico de descargas (egress) solo se ve en Supabase → Usage.
+      </div>
+      {error ? (
+        <div className="ts-alm-error">{error}</div>
+      ) : !uso ? (
+        <div className="ts-campo-ayuda">{cargando ? "Midiendo el almacenamiento…" : ""}</div>
+      ) : (
+        <>
+          <div className="ts-alm-medidores">
+            <MedidorAlmacenamiento
+              titulo="Base de datos"
+              usado={Number(uso.base_bytes) || 0}
+              limiteMb={lim.base_mb}
+            />
+            <MedidorAlmacenamiento
+              titulo="Archivos e imágenes"
+              usado={Number(uso.archivos_bytes) || 0}
+              limiteMb={lim.archivos_mb}
+              detalle={`${Number(uso.archivos_cantidad) || 0} archivos`}
+            />
+          </div>
+          {!Number(uso.archivos_cantidad) && (
+            <div className="ts-campo-ayuda" style={{ marginBottom: 12 }}>
+              Aún no hay imágenes guardadas. Cuando se agreguen fotos a los registros, aquí se verá cuánto ocupan.
+            </div>
+          )}
+          <div className="ts-alm-subtitulo">Historial de uso</div>
+          <GraficoAlmacenamiento historial={cfg.historial} />
+          {estBase && <div className="ts-alm-estimacion">{estBase.texto}</div>}
+
+          <div className="ts-alm-subtitulo">Espacio por tabla</div>
+          <div className="ts-alm-tablas">
+            {tablas.map((t) => (
+              <div key={t.tabla} className="ts-alm-tabla">
+                <span className="ts-alm-tabla-nombre">{NOMBRES_TABLAS[t.tabla] || t.tabla}</span>
+                <span className="ts-alm-tabla-barra">
+                  <i style={{ width: `${Math.max(2, ((Number(t.bytes) || 0) / maxTabla) * 100)}%` }} />
+                </span>
+                <span className="ts-alm-tabla-dato">{textoBytes(t.bytes)}</span>
+                <span className="ts-alm-tabla-dato ts-texto-tenue">{Number(t.filas || 0).toLocaleString("es")} filas</span>
+              </div>
+            ))}
+          </div>
+          <div className="ts-campo-ayuda" style={{ margin: "6px 0 12px" }}>
+            El total de la base incluye además el espacio interno de Supabase (usuarios, índices y sistema).
+          </div>
+
+          <div className="ts-alm-subtitulo">Límites del plan</div>
+          <div className="ts-form-grid">
+            <label className="ts-campo">
+              <span>Base de datos (MB)</span>
+              <input type="number" min="1" value={lim.base_mb} onChange={(e) => cambiarLimite("base_mb", e.target.value)} />
+            </label>
+            <label className="ts-campo">
+              <span>Archivos e imágenes (MB)</span>
+              <input type="number" min="1" value={lim.archivos_mb} onChange={(e) => cambiarLimite("archivos_mb", e.target.value)} />
+            </label>
+          </div>
+          <div className="ts-form-acciones">
+            <span className="ts-campo-ayuda" style={{ marginRight: "auto" }}>
+              Medido: {uso.medido_en ? new Date(uso.medido_en).toLocaleString("es") : "—"} · Plan gratuito: 500 MB y 1 GB.
+            </span>
+            <button type="button" className="ts-btn" onClick={medir} disabled={cargando}>
+              {cargando ? "Midiendo…" : "Actualizar"}
+            </button>
+          </div>
+        </>
+      )}
+    </>
+  );
+}
+
+function PanelAlmacenamiento() {
+  return (
+    <Panel titulo="Almacenamiento" colapsable>
+      <CuerpoAlmacenamiento />
     </Panel>
   );
 }
@@ -7058,6 +7943,8 @@ function Configuracion({
         trabajos={trabajosParaReporte}
         usuario={usuarioReporte}
       />
+
+      {usuarioEnSesion.esAdmin && <PanelAlmacenamiento />}
 
       <Panel
         titulo="Roles y permisos"
@@ -8637,6 +9524,7 @@ function IconoClaro() {
 function Estilos() {
   return (
     <style>{`
+      ${fontFaceDoc()}
       .ts-root, .ts-root * { box-sizing: border-box; }
       .ts-root {
         --bg: #14181c;
@@ -8733,7 +9621,7 @@ function Estilos() {
         top: 0;
         height: 100vh;
         box-sizing: border-box;
-        overflow-y: auto;
+        overflow: visible;
       }
       .ts-brand { display: flex; align-items: center; gap: 10px; padding: 0 4px; }
       .ts-brand-mark {
@@ -8781,6 +9669,8 @@ function Estilos() {
 
       .ts-nav { display: flex; flex-direction: column; gap: 2px; flex: 1; }
       .ts-nav-item {
+        display: flex; align-items: center; gap: 10px;
+        white-space: nowrap; overflow: hidden;
         text-align: left;
         background: transparent;
         border: none;
@@ -8797,6 +9687,66 @@ function Estilos() {
         color: var(--sidebar-text);
         border-left: 2px solid var(--amber);
         font-weight: 600;
+      }
+
+      .ts-nav-icono { display: flex; align-items: center; justify-content: center; width: 18px; height: 18px; flex-shrink: 0; }
+      .ts-nav-texto { overflow: hidden; text-overflow: ellipsis; }
+
+      /* Control del panel lateral (abajo a la izquierda) */
+      .ts-lateral-pie { position: relative; margin-top: auto; }
+      .ts-lateral-boton {
+        display: flex; align-items: center; justify-content: center;
+        width: 32px; height: 32px; margin-left: 2px;
+        background: transparent; border: none; border-radius: 4px;
+        color: var(--sidebar-text-dim); cursor: pointer;
+      }
+      .ts-lateral-boton:hover, .ts-lateral-menu-abierto .ts-lateral-boton { background: var(--sidebar-hover); color: var(--sidebar-text); }
+      .ts-lateral-menu {
+        position: absolute; left: 0; bottom: calc(100% + 6px); z-index: 60;
+        min-width: 230px; padding: 6px;
+        background: var(--sidebar-bg); color: var(--sidebar-text);
+        border: 1px solid var(--sidebar-border); border-radius: 6px;
+        box-shadow: 0 8px 24px rgba(0,0,0,.28);
+      }
+      .ts-lateral-menu-titulo {
+        font-size: calc(11.5px * var(--ts-escala-fuente, 1)); color: var(--sidebar-text-dim);
+        padding: 4px 8px 6px; margin-bottom: 4px; border-bottom: 1px solid var(--sidebar-border);
+      }
+      .ts-lateral-menu-op {
+        display: flex; align-items: center; gap: 10px; width: 100%;
+        background: transparent; border: none; border-radius: 4px;
+        color: var(--sidebar-text); text-align: left; cursor: pointer;
+        padding: 7px 8px; font-size: calc(13px * var(--ts-escala-fuente, 1)); white-space: nowrap;
+      }
+      .ts-lateral-menu-op:hover { background: var(--sidebar-hover); }
+      .ts-lateral-menu-punto { width: 6px; height: 6px; border-radius: 50%; flex-shrink: 0; }
+      .ts-lateral-menu-op-activa .ts-lateral-menu-punto { background: var(--sidebar-text); }
+
+      /* Panel contraído: solo íconos */
+      @media (min-width: 721px) {
+        .ts-root.ts-lateral-contraido { grid-template-columns: 60px 1fr; }
+        .ts-sidebar { transition: width .16s ease, box-shadow .16s ease; }
+        .ts-lateral-contraido .ts-sidebar { width: 60px; padding-left: 10px; padding-right: 10px; }
+        .ts-lateral-contraido .ts-brand { padding: 0 2px; }
+        .ts-lateral-contraido .ts-brand-name,
+        .ts-lateral-contraido .ts-nav-texto { display: none; }
+        .ts-lateral-contraido .ts-nav-item { justify-content: center; padding: 9px 0; }
+        .ts-lateral-contraido .ts-lateral-boton { margin-left: 4px; }
+        /* Expandir al pasar el cursor: el panel se abre por encima del contenido */
+        .ts-lateral-hover .ts-sidebar { z-index: 45; }
+        .ts-lateral-hover .ts-sidebar:hover,
+        .ts-lateral-hover.ts-lateral-menu-abierto .ts-sidebar {
+          width: 220px; margin-right: -160px; padding-left: 14px; padding-right: 14px;
+          box-shadow: 6px 0 24px rgba(0,0,0,.18);
+        }
+        .ts-lateral-hover .ts-sidebar:hover .ts-brand-name,
+        .ts-lateral-hover .ts-sidebar:hover .ts-nav-texto,
+        .ts-lateral-hover.ts-lateral-menu-abierto .ts-brand-name,
+        .ts-lateral-hover.ts-lateral-menu-abierto .ts-nav-texto { display: inline; }
+        .ts-lateral-hover .ts-sidebar:hover .ts-nav-item,
+        .ts-lateral-hover.ts-lateral-menu-abierto .ts-nav-item { justify-content: flex-start; padding: 9px 10px; }
+        .ts-lateral-hover .ts-sidebar:hover .ts-lateral-boton,
+        .ts-lateral-hover.ts-lateral-menu-abierto .ts-lateral-boton { margin-left: 2px; }
       }
 
       .ts-sidebar-foot { border-top: 1px solid var(--sidebar-border); padding-top: 12px; }
@@ -9276,16 +10226,17 @@ function Estilos() {
       .ts-tabla.ts-tabla-trabajos-amplia { table-layout: auto; }
       .ts-tabla-trabajos th, .ts-tabla-trabajos td,
       .ts-tabla-trabajos-amplia th, .ts-tabla-trabajos-amplia td { width: 1%; white-space: nowrap; }
-      .ts-tabla-trabajos th:nth-child(2), .ts-tabla-trabajos td:nth-child(2),
-      .ts-tabla-trabajos-amplia th:nth-child(2), .ts-tabla-trabajos-amplia td:nth-child(2) {
+      /* Columnas: 1 OT (con la bandera), 2 Equipo, 3 Trabajo (la ancha), ... */
+      .ts-tabla-trabajos th:nth-child(3), .ts-tabla-trabajos td:nth-child(3),
+      .ts-tabla-trabajos-amplia th:nth-child(3), .ts-tabla-trabajos-amplia td:nth-child(3) {
         width: auto;
         min-width: 320px;
         white-space: normal;
         padding-right: 22px;
       }
       .ts-tabla-trabajos td .ts-clamp-2, .ts-tabla-trabajos-amplia td .ts-clamp-2 { white-space: normal; }
-      .ts-tabla-trabajos td:not(:nth-child(2)) .ts-clamp-2,
-      .ts-tabla-trabajos-amplia td:not(:nth-child(2)) .ts-clamp-2 { white-space: nowrap; display: block; }
+      .ts-tabla-trabajos td:not(:nth-child(3)) .ts-clamp-2,
+      .ts-tabla-trabajos-amplia td:not(:nth-child(3)) .ts-clamp-2 { white-space: nowrap; display: block; }
       .ts-tabla-trabajos .ts-acciones-fila,
       .ts-tabla-trabajos-amplia .ts-acciones-fila { flex-wrap: nowrap; }
       .ts-tabla-trabajos td:last-child .ts-acciones-fila,
@@ -9293,16 +10244,17 @@ function Estilos() {
       /* Pestaña Trabajos: las tablas de programados y no programados usan los
          mismos anchos fijos para que sus columnas queden alineadas. */
       .ts-tabla.ts-tabla-trabajos-amplia { table-layout: fixed; width: 100%; }
-      .ts-tabla-trabajos-amplia th:nth-child(1), .ts-tabla-trabajos-amplia td:nth-child(1) { width: 108px; }
-      .ts-tabla-trabajos-amplia th:nth-child(2), .ts-tabla-trabajos-amplia td:nth-child(2) { width: auto; min-width: 0; }
-      .ts-tabla-trabajos-amplia th:nth-child(3), .ts-tabla-trabajos-amplia td:nth-child(3) { width: 150px; }
-      .ts-tabla-trabajos-amplia th:nth-child(4), .ts-tabla-trabajos-amplia td:nth-child(4) { width: 128px; }
-      .ts-tabla-trabajos-amplia th:nth-child(5), .ts-tabla-trabajos-amplia td:nth-child(5) { width: 70px; }
-      .ts-tabla-trabajos-amplia th:nth-child(6), .ts-tabla-trabajos-amplia td:nth-child(6) { width: 104px; }
-      .ts-tabla-trabajos-amplia td:nth-child(3) .ts-clamp-2 { overflow: hidden; text-overflow: ellipsis; }
+      .ts-tabla-trabajos-amplia th:nth-child(1), .ts-tabla-trabajos-amplia td:nth-child(1) { width: 118px; }
+      .ts-tabla-trabajos-amplia th:nth-child(2), .ts-tabla-trabajos-amplia td:nth-child(2) { width: 78px; }
+      .ts-tabla-trabajos-amplia th:nth-child(3), .ts-tabla-trabajos-amplia td:nth-child(3) { width: auto; min-width: 0; }
+      .ts-tabla-trabajos-amplia th:nth-child(4), .ts-tabla-trabajos-amplia td:nth-child(4) { width: 150px; }
+      .ts-tabla-trabajos-amplia th:nth-child(5), .ts-tabla-trabajos-amplia td:nth-child(5) { width: 128px; }
+      .ts-tabla-trabajos-amplia th:nth-child(6), .ts-tabla-trabajos-amplia td:nth-child(6) { width: 70px; }
+      .ts-tabla-trabajos-amplia th:nth-child(7), .ts-tabla-trabajos-amplia td:nth-child(7) { width: 104px; }
+      .ts-tabla-trabajos-amplia td:nth-child(4) .ts-clamp-2 { overflow: hidden; text-overflow: ellipsis; }
 
       /* Ancho mínimo: en pantallas angostas la tabla se desplaza dentro de su cuadro */
-      .ts-tabla-trabajos { min-width: 900px; }
+      .ts-tabla-trabajos { min-width: 980px; }
       .ts-tabla-trabajos-amplia { min-width: 700px; }
       .ts-tabla-personal { min-width: 860px; }
       .ts-tabla-equipos { min-width: 720px; }
@@ -9380,7 +10332,7 @@ function Estilos() {
       .ts-estado-menu button { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
       .ts-estado-menu-titulo { padding: 6px 12px 4px; font-size: calc(11.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); font-weight: 600; }
       .ts-req-estado .ts-estado-menu { left: auto; right: 0; }
-      .ts-aceites-tabla .ts-tabla th, .ts-aceites-tabla .ts-tabla td { padding-left: 7px; padding-right: 7px; }
+      .ts-aceites-tabla .ts-tabla th, .ts-aceites-tabla .ts-tabla td { padding-left: 5px; padding-right: 5px; }
       .ts-estado-actual { font-size: calc(11px * var(--ts-escala-fuente, 1)); color: var(--text-dim); }
       .ts-am-tag-dia { background: rgba(245, 158, 11, 0.18); color: #c27c0e; }
       .ts-am-tag-noche { background: rgba(99, 102, 241, 0.18); color: #5b5fd6; }
@@ -9421,6 +10373,8 @@ function Estilos() {
       }
       .ts-tm-info { min-width: 0; line-height: 1.35; }
       .ts-tm-linea { color: var(--text); font-weight: 500; font-size: calc(15px * var(--ts-escala-fuente, 1)); }
+      .ts-tm-ot { color: var(--text-dim); font-weight: 500; }
+      .ts-texto-tenue { color: var(--text-dim); }
       .ts-tm-linea strong, .ts-tm-linea .ts-tm-horario { color: var(--text); }
       .ts-tm-info strong { font-size: calc(17px * var(--ts-escala-fuente, 1)); font-family: var(--mono, monospace); }
       .ts-tm-fecha { font-size: calc(11.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); margin-bottom: 2px; }
@@ -9442,6 +10396,7 @@ function Estilos() {
       }
       /* Fondo suave (transparente) y símbolo en el color del estado */
       .ts-estado-icono-ok { background: var(--green-dim); color: var(--green); }
+      .ts-col-verif { text-align: center; }
       .ts-estado-icono-alerta { background: var(--red-dim); color: var(--red); }
 
       /* Ventana flotante de formularios (crear / editar) */
@@ -9482,6 +10437,22 @@ function Estilos() {
         cursor: pointer;
       }
       .ts-modal-form-cerrar:hover { background: var(--panel-2); color: var(--text); }
+      /* Quién está editando el registro (a la izquierda de la ×) */
+      .ts-modal-con-editor .ts-panel-head { padding-right: 290px; }
+      .ts-modal-editor {
+        position: absolute; top: 12px; right: 52px; z-index: 2;
+        max-width: 240px; display: flex; align-items: center; gap: 7px;
+        padding: 4px 11px; border-radius: 999px;
+        background: var(--green-dim); color: var(--green);
+        font-size: calc(12px * var(--ts-escala-fuente, 1)); font-weight: 600;
+        white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+      }
+      .ts-modal-editor-punto { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; animation: ts-latido 1.6s ease-in-out infinite; }
+      .ts-modal-editor-ocupado { background: var(--red-dim); color: var(--red); }
+      @keyframes ts-latido { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+      .ts-edicion-ocupada { display: flex; flex-direction: column; gap: 12px; padding: 6px 4px 4px; font-size: calc(14px * var(--ts-escala-fuente, 1)); color: var(--text); line-height: 1.5; }
+      .ts-edicion-ocupada-icono { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--red-dim); color: var(--red); }
+      .ts-edicion-ocupada-icono svg { width: 22px; height: 22px; }
       /* Mientras el formulario está abierto se ocultan los botones flotantes */
       .ts-stack:has(.ts-modal-form-fondo) .ts-accion-row-split { display: none; }
       /* Equipos no disponibles (Inicio): etiqueta convertida en botón que
@@ -9842,6 +10813,71 @@ function Estilos() {
       .ts-campo { display: flex; flex-direction: column; gap: 5px; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); }
       .ts-campo-full { grid-column: 1 / -1; margin-bottom: 12px; }
       .ts-check { flex-direction: row; align-items: center; gap: 8px; }
+      /* Aceites → Adición: verificaciones obligatorias */
+      .ts-verificaciones { grid-column: span 2; display: flex; flex-direction: column; gap: 2px; margin: 0; padding: 10px 12px; border: 1px solid var(--border); border-radius: 6px; background: var(--panel-2); min-width: 0; }
+      .ts-verificaciones-titulo { font-size: calc(12.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); margin-bottom: 4px; }
+      .ts-verificacion { display: flex; align-items: center; justify-content: space-between; gap: 14px; padding: 6px 0; cursor: pointer; font-size: calc(13.5px * var(--ts-escala-fuente, 1)); color: var(--text); }
+      .ts-verificacion + .ts-verificacion { border-top: 1px solid var(--border); }
+      .ts-grid-verificaciones { grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); }
+      .ts-verificacion span { flex: 1; min-width: 0; }
+      .ts-verificacion input { width: 18px !important; min-width: 18px; height: 18px; flex-shrink: 0; accent-color: var(--amber); cursor: pointer; margin: 0; }
+      .ts-verificaciones-aviso { border-color: var(--red); }
+      .ts-verificaciones-error { color: var(--red); font-size: calc(12.5px * var(--ts-escala-fuente, 1)); margin-top: 4px; }
+      /* Configuración → Almacenamiento */
+      .ts-alm-medidores { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; margin-bottom: 12px; }
+      .ts-alm-medidor { border: 1px solid var(--border); border-radius: 6px; padding: 12px 14px; background: var(--panel); }
+      .ts-alm-medidor-cab { display: flex; justify-content: space-between; align-items: baseline; color: var(--text); font-size: calc(13.5px * var(--ts-escala-fuente, 1)); margin-bottom: 8px; }
+      .ts-alm-medidor-cab b { font-size: calc(18px * var(--ts-escala-fuente, 1)); font-weight: 600; font-variant-numeric: tabular-nums; }
+      .ts-alm-barra { height: 10px; border-radius: 999px; background: var(--panel-2); overflow: hidden; }
+      .ts-alm-barra-uso { height: 100%; border-radius: 999px; transition: width .4s ease; }
+      .ts-alm-verde { background: var(--green); }
+      .ts-alm-amarillo { background: var(--yellow); }
+      .ts-alm-rojo { background: var(--red); }
+      .ts-alm-medidor-pie { margin-top: 7px; color: var(--text-dim); font-size: calc(12.5px * var(--ts-escala-fuente, 1)); font-variant-numeric: tabular-nums; }
+      .ts-alm-alerta { margin-top: 8px; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); font-weight: 600; }
+      .ts-alm-alerta-amarillo { color: #a67c00; }
+      .ts-alm-alerta-rojo { color: var(--red); }
+      .ts-alm-subtitulo { font-size: calc(11.5px * var(--ts-escala-fuente, 1)); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin: 14px 0 8px; }
+      .ts-alm-grafico { max-width: 760px; }
+      .ts-alm-grafico svg { width: 100%; height: auto; display: block; }
+      .ts-alm-rejilla { stroke: var(--border); stroke-width: 1; }
+      .ts-alm-eje { fill: var(--text-dim); font-size: 10.5px; font-family: inherit; }
+      .ts-alm-linea-base { fill: none; stroke: var(--blue); stroke-width: 2; }
+      .ts-alm-linea-archivos { fill: none; stroke: var(--green); stroke-width: 2; }
+      .ts-alm-punto-base { fill: var(--blue); }
+      .ts-alm-leyenda { display: flex; gap: 16px; font-size: calc(12px * var(--ts-escala-fuente, 1)); color: var(--text-dim); margin-top: 4px; }
+      .ts-alm-leyenda i { display: inline-block; width: 14px; height: 3px; border-radius: 2px; vertical-align: middle; margin-right: 5px; }
+      .ts-alm-ley-base { background: var(--blue); }
+      .ts-alm-ley-archivos { background: var(--green); }
+      .ts-alm-estimacion { margin-top: 8px; font-size: calc(13px * var(--ts-escala-fuente, 1)); color: var(--text); }
+      .ts-alm-tablas { display: flex; flex-direction: column; gap: 6px; }
+      .ts-alm-tabla { display: grid; grid-template-columns: minmax(120px, 170px) 1fr 72px 82px; align-items: center; gap: 10px; font-size: calc(13px * var(--ts-escala-fuente, 1)); color: var(--text); }
+      .ts-alm-tabla-barra { height: 7px; background: var(--panel-2); border-radius: 999px; overflow: hidden; }
+      .ts-alm-tabla-barra i { display: block; height: 100%; background: var(--blue); border-radius: 999px; opacity: .75; }
+      .ts-alm-tabla-dato { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+      .ts-alm-error { padding: 10px 12px; border-radius: 6px; background: var(--red-dim); color: var(--red); font-size: calc(13px * var(--ts-escala-fuente, 1)); }
+      @media (max-width: 600px) {
+        .ts-alm-tabla { grid-template-columns: 1fr 64px 70px; }
+        .ts-alm-tabla-barra { display: none; }
+      }
+      /* Configuración → Reportes: cajetín */
+      .ts-cajetin-config { border-top: 1px solid var(--border); margin: 6px 0 14px; padding-top: 12px; }
+      .ts-cajetin-titulo { font-size: calc(13.5px * var(--ts-escala-fuente, 1)); font-weight: 600; color: var(--text); margin-bottom: 10px; }
+      .ts-cajetin-sub { font-size: calc(11.5px * var(--ts-escala-fuente, 1)); font-weight: 600; text-transform: uppercase; letter-spacing: .05em; color: var(--text-dim); margin: 4px 0 8px; }
+      .ts-cajetin-previa { background: #fff; color: #1b1f24; border-radius: 4px; padding: 12px; margin-bottom: 14px; overflow-x: auto; border: 1px solid var(--border); }
+      .ts-cajetin-previa table { width: 100%; min-width: 520px; border: 1px solid #d5d9df; border-collapse: separate; border-spacing: 0; table-layout: fixed; font-family: "TS Doc", "Segoe UI", Inter, Roboto, Arial, sans-serif; }
+      .ts-cajetin-previa td { padding: 8px 10px; vertical-align: middle; }
+      .ts-cp-logo { text-align: center; border-right: 1px solid #e3e6ea; }
+      .ts-cp-logo img { object-fit: contain; }
+      .ts-cp-ini { margin: 0 auto; color: #fff; font-weight: 800; display: flex; align-items: center; justify-content: center; }
+      .ts-cp-centro { text-align: center; }
+      .ts-cp-doc { border-left: 1px solid #e3e6ea; }
+      .ts-cp-doc div { display: flex; justify-content: space-between; gap: 8px; padding: 1.5px 0; white-space: nowrap; }
+      .ts-cp-doc span { color: #6b7280; }
+      .ts-form-grid-3 { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
+      .ts-campo-px { display: flex; align-items: center; gap: 6px; }
+      .ts-campo-px input { flex: 1; min-width: 0; }
+      .ts-campo-px em { font-style: normal; color: var(--text-dim); font-size: calc(12px * var(--ts-escala-fuente, 1)); }
       .ts-config-reporte-opciones { display: flex; flex-wrap: wrap; gap: 8px 22px; margin: 4px 0 14px; }
       .ts-config-reporte-opciones .ts-check { font-size: calc(13px * var(--ts-escala-fuente, 1)); color: var(--text); }
       .ts-config-reporte-opciones input[type="checkbox"] { width: 16px; height: 16px; }
@@ -10072,7 +11108,17 @@ function Estilos() {
 
         /* Botones flotantes en celular: por encima de la barra de navegación inferior. */
         .ts-accion-row-split { right: 16px; bottom: calc(84px + env(safe-area-inset-bottom, 0px)); }
-        .ts-topbar { padding: 14px 16px; }
+        .ts-topbar {
+          padding: 14px 16px; padding-top: calc(14px + env(safe-area-inset-top, 0px));
+          background: var(--sidebar-bg); color: var(--sidebar-text); border-bottom-color: var(--sidebar-border);
+        }
+        .ts-topbar-title { color: var(--sidebar-text); }
+        .ts-topbar .ts-btn-tres-puntos, .ts-topbar .ts-btn-buscar { color: var(--sidebar-text-dim); }
+        .ts-topbar .ts-filtros-resumen { background: var(--sidebar-hover); color: var(--sidebar-text-dim); }
+        .ts-topbar .ts-filtros-resumen-activo { color: var(--sidebar-text); font-weight: 600; }
+        .ts-topbar .ts-filtro-punto { background: var(--sidebar-text); box-shadow: 0 0 0 2px var(--sidebar-bg); }
+        .ts-topbar .ts-btn-filtro-activo { background: var(--sidebar-hover); color: var(--sidebar-text); }
+        .ts-topbar .ts-rol-movil { background: var(--sidebar-hover); color: var(--sidebar-text); border-color: var(--sidebar-border); }
         .ts-topbar-title { font-size: calc(17px * var(--ts-escala-fuente, 1)); }
         /* Íconos de la barra superior más grandes y fáciles de tocar */
         .ts-btn-tres-puntos { width: 40px; height: 40px; border-radius: 12px; }
@@ -10096,7 +11142,7 @@ function Estilos() {
 
         /* Formularios: una columna, botones a todo el ancho */
         /* Formularios compactos en celular: dos columnas para campos cortos */
-        .ts-form-grid { grid-template-columns: 1fr 1fr; gap: 10px 10px; margin-bottom: 10px; }
+        .ts-form-grid, .ts-grid-verificaciones { grid-template-columns: 1fr 1fr; gap: 10px 10px; margin-bottom: 10px; }
         .ts-apoyo { grid-template-columns: 1fr 1fr; gap: 10px; }
         .ts-form-grid input, .ts-form-grid select, .ts-campo input, .ts-campo select {
           width: 100%; min-width: 0; box-sizing: border-box;
@@ -10179,8 +11225,19 @@ function Estilos() {
         .ts-tabla-cards tbody tr { margin-bottom: 8px; }
         .ts-ocultar-movil { display: none; }
         /* Barras que se ocultan al deslizar hacia abajo */
-        .ts-topbar, .ts-bottom-nav, .ts-accion-row-split { transition: transform 0.22s ease; }
-        .ts-barras-ocultas .ts-topbar { transform: translateY(-110%); }
+        /* Barras superior e inferior con el color del panel izquierdo; al
+           deslizar se vuelven transparentes (como Gmail) y el contenido se
+           ve por debajo. */
+        .ts-topbar, .ts-bottom-nav { transition: background-color 0.25s ease, border-color 0.25s ease, backdrop-filter 0.25s ease; }
+        .ts-desplazado .ts-topbar,
+        .ts-desplazado .ts-bottom-nav {
+          background: color-mix(in srgb, var(--sidebar-bg) 55%, transparent);
+          -webkit-backdrop-filter: blur(6px);
+          backdrop-filter: blur(6px);
+          border-color: transparent;
+        }
+        /* Deslizando hacia abajo: la barra inferior se oculta */
+        .ts-bottom-nav, .ts-accion-row-split { transition: transform 0.22s ease, background-color 0.25s ease, border-color 0.25s ease; }
         .ts-barras-ocultas .ts-bottom-nav { transform: translateY(110%); }
         .ts-barras-ocultas .ts-accion-row-split { transform: translateY(72px); }
         .ts-trabajos-movil { display: block; }
@@ -10199,6 +11256,8 @@ function Estilos() {
           padding-top: calc(12px + env(safe-area-inset-top, 0px));
         }
         .ts-modal-form-cerrar { position: fixed; top: calc(6px + env(safe-area-inset-top, 0px)); right: 8px; z-index: 81; }
+        .ts-modal-editor { position: fixed; top: calc(12px + env(safe-area-inset-top, 0px)); right: 50px; z-index: 81; max-width: 46vw; }
+        .ts-modal-con-editor .ts-panel-head { padding-right: calc(46vw + 56px); }
         .ts-modal-form .ts-panel-body { padding: 14px 14px calc(24px + env(safe-area-inset-bottom, 0px)); }
         .ts-renombrar-grupo input { width: 130px; }
 
@@ -10214,6 +11273,7 @@ function Estilos() {
       /* Tablet: menú lateral más angosto */
       @media (min-width: 721px) and (max-width: 1024px) {
         .ts-root { grid-template-columns: 190px 1fr; }
+        .ts-root.ts-lateral-contraido { grid-template-columns: 60px 1fr; }
         .ts-topbar { padding: 14px 16px; }
       }
 

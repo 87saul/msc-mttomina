@@ -18,6 +18,8 @@ La misma aplicación funciona en computadora y en celular. En el celular se pued
 | `supabase/1_base_de_datos.sql` | Crea toda la base de datos. Se pega **una sola vez** en Supabase. |
 | `supabase/2_administrador.sql` | Convierte en Administrador al usuario que creas en Supabase. |
 | `supabase/3_personal_inicial_opcional.sql` | **Opcional.** Crea las cuentas de las 99 personas del taller. |
+| `supabase/4_almacenamiento.sql` | Activa el cuadro de Almacenamiento en Configuración. |
+| `public/fuentes/` | Letra de los documentos PDF y Word (Inter, licencia libre). |
 | `src/` | El código de la aplicación. No necesitas tocarlo. |
 | `netlify.toml` y `public/_redirects` | Ajustes para que Netlify no muestre la página en blanco al refrescar. |
 | `.env.example` | Modelo de las dos variables de conexión. |
@@ -63,6 +65,11 @@ Si quieres que las 99 personas de la lista ya tengan su cuenta:
 3. Recomendación: pide a cada persona que cambie su contraseña en el menú **⋮ → Cambiar contraseña**.
 
 Si no ejecutas este paso, puedes crear al personal desde la app, en **Configuración**.
+
+### Paso 5b. Control de almacenamiento (Script 4)
+Para ver en **Configuración → Almacenamiento** cuánto espacio usa la base de datos y los archivos:
+1. **SQL Editor** → **New query** → pega `supabase/4_almacenamiento.sql` → **Run**.
+2. Solo el Administrador puede ver ese cuadro.
 
 ### Paso 6. Copiar los dos datos de conexión
 1. En Supabase pulsa **Connect** (arriba), o entra a **Project Settings** → **API**.

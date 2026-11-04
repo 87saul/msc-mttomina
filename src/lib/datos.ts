@@ -50,7 +50,7 @@ function aFila(tabla: string, obj: Fila): Fila {
 
 // Convierte una fila de la base de datos al formato que usa la app
 // (textos vacíos en lugar de null, participantes como lista).
-function desdeFila(fila: Fila): Fila {
+export function desdeFila(fila: Fila): Fila {
   if (!fila) return fila;
   const { extra, creado_por, registrado, ...resto } = fila;
   const obj: Fila = { ...(extra || {}), ...resto };

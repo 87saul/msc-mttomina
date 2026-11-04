@@ -24,6 +24,7 @@ const VENCE_MS = 65000;
 
 let canal = null;
 let conectado = false;
+let sincronizado = false; // ya llegó la lista de quién está editando
 let estado = {}; // presencia: { [sesion]: [{ clave, usuario, nombre, desde, latido, sesion }] }
 let miEdicion = null; // { clave, usuario, nombre, desde, latido, sesion }
 let enPausa = false; // app en segundo plano
@@ -47,6 +48,7 @@ function asegurarCanal() {
     canal
       .on("presence", { event: "sync" }, () => {
         estado = canal.presenceState() || {};
+        sincronizado = true;
         const ahora = Date.now();
         Object.values(estado).forEach((metas) =>
           (metas || []).forEach((m) => {
@@ -88,6 +90,36 @@ function titularDe(clave) {
   return lista[0] || null;
 }
 
+// Se conecta al iniciar sesión, así al abrir una edición ya se sabe quién
+// está editando qué (y las listas pueden mostrarlo).
+export function iniciarPresencia() {
+  asegurarCanal();
+}
+
+// Ediciones en curso de OTRAS personas: { "trabajos:ID": { usuario, nombre, ... } }
+export function useEdicionesActivas() {
+  const [, refrescar] = useState(0);
+  useEffect(() => {
+    asegurarCanal();
+    const f = () => refrescar((n) => n + 1);
+    oyentes.add(f);
+    const t = setInterval(f, LATIDO_MS);
+    return () => {
+      oyentes.delete(f);
+      clearInterval(t);
+    };
+  }, []);
+  const mapa = {};
+  Object.values(estado).forEach((metas) =>
+    (metas || []).forEach((m) => {
+      if (!m || !m.clave || m.sesion === SESION || !vigente(m)) return;
+      const actual = mapa[m.clave];
+      if (!actual || m.desde < actual.desde) mapa[m.clave] = m;
+    })
+  );
+  return mapa;
+}
+
 // Hook para el cuadro de edición de un registro.
 // clave: "trabajos:ID" (null al crear un registro nuevo: no se bloquea).
 // Devuelve { estado: "libre" | "verificando" | "propio" | "ocupado", editor }
@@ -105,7 +137,15 @@ export function useBloqueoEdicion(clave, yo) {
     // Se espera un momento a que lleguen los demás (si no hay conexión, no se
     // bloquea la edición).
     setVerificando(true);
-    const t = setTimeout(() => setVerificando(false), conectado ? 900 : 2500);
+    let t = null;
+    const inicio = Date.now();
+    // Espera a tener la lista de quién edita (máx. 4 s; sin conexión no se
+    // bloquea la edición).
+    const revisar = () => {
+      if ((sincronizado && Date.now() - inicio > 500) || Date.now() - inicio > 4000) setVerificando(false);
+      else t = setTimeout(revisar, 150);
+    };
+    revisar();
     // Señal de vida cada 20 s y revisión de ediciones vencidas.
     const latido = setInterval(() => {
       enviarMiEstado();

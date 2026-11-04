@@ -4,7 +4,8 @@
 import React, { useState, useMemo, useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import * as db from "../lib/datos";
-import { useBloqueoEdicion } from "../lib/bloqueos";
+import { useBloqueoEdicion, iniciarPresencia, useEdicionesActivas } from "../lib/bloqueos";
+import { escucharCambios } from "../lib/tiempoReal";
 import { useSesion } from "../hooks/useSesion";
 import { RUTAS, vistaDesdeRuta } from "../routes/rutas";
 import CambiarContrasena from "../components/CambiarContrasena";
@@ -2103,6 +2104,36 @@ export default function TruckShopApp() {
       setCargando(false);
     }
   }
+  // -- Tiempo real: lo que registran, editan o eliminan los demás aparece
+  //    solo, sin pulsar "Actualizar" ------------------------------------------
+  const refPersonal = useRef([]);
+  refPersonal.current = personal;
+  const refCargarDatos = useRef(null);
+  refCargarDatos.current = cargarDatos;
+  useEffect(() => {
+    if (!datosListos || !sesion) return;
+    iniciarPresencia();
+    const miId = sesion.user.id;
+    const NOMBRE_TABLA = { trabajos: "un trabajo", aceites: "un registro de aceite", requerimientos: "un requerimiento" };
+    return escucharCambios(
+      (tabla, tipo, fila, id, creadoPor) => {
+        const setter = { trabajos: setTrabajos, aceites: setAceites, requerimientos: setRequerimientos }[tabla];
+        if (!setter) return;
+        if (tipo === "DELETE") {
+          setter((prev) => prev.filter((r) => r.id !== id));
+          return;
+        }
+        setter((prev) => (prev.some((r) => r.id === id) ? prev.map((r) => (r.id === id ? fila : r)) : [...prev, fila]));
+        if (tipo === "INSERT" && creadoPor && creadoPor !== miId) {
+          const quien = refPersonal.current.find((p) => p.id === creadoPor);
+          const nombre = quien ? quien.usuario || quien.nombre : "Otro usuario";
+          setAviso(`${nombre} registró ${NOMBRE_TABLA[tabla]}${fila && fila.equipo ? ` · equipo ${fila.equipo}` : ""}.`);
+        }
+      },
+      () => refCargarDatos.current && refCargarDatos.current()
+    );
+  }, [datosListos, sesion && sesion.user && sesion.user.id]);
+
   useEffect(() => {
     if (sesion) {
       cargarDatos();
@@ -2304,7 +2335,7 @@ export default function TruckShopApp() {
   async function agregarTrabajo(nuevo) {
     try {
       const fila = await db.insertar("trabajos", { ...nuevo, creado_en: marcaDeTiempo() });
-      setTrabajos((prev) => [...prev, fila]);
+      setTrabajos((prev) => (prev.some((r) => r.id === fila.id) ? prev.map((r) => (r.id === fila.id ? fila : r)) : [...prev, fila]));
     } catch (e) {
       avisarError(e);
     }
@@ -2330,7 +2361,7 @@ export default function TruckShopApp() {
   async function agregarAceite(nuevo) {
     try {
       const fila = await db.insertar("aceites", { ...nuevo, creado_en: marcaDeTiempo() });
-      setAceites((prev) => [...prev, fila]);
+      setAceites((prev) => (prev.some((r) => r.id === fila.id) ? prev.map((r) => (r.id === fila.id ? fila : r)) : [...prev, fila]));
     } catch (e) {
       avisarError(e);
     }
@@ -2350,7 +2381,7 @@ export default function TruckShopApp() {
   async function agregarRequerimiento(nuevo) {
     try {
       const fila = await db.insertar("requerimientos", { ...nuevo, estado: "pendiente_aprobacion", creado_en: marcaDeTiempo() });
-      setRequerimientos((prev) => [...prev, fila]);
+      setRequerimientos((prev) => (prev.some((r) => r.id === fila.id) ? prev.map((r) => (r.id === fila.id ? fila : r)) : [...prev, fila]));
     } catch (e) {
       avisarError(e);
     }
@@ -4823,6 +4854,16 @@ function filtrarPorMarca(lista, filtro) {
 }
 
 function TablaTrabajos({ filas, compacta, onFilaClick, onImprimir, onEliminar, sinFechaTurnoGrupo, onMarcar, filtroMarca, onFiltroMarca }) {
+  // Quién está editando cada trabajo ahora mismo (se ve sin abrirlo).
+  const ediciones = useEdicionesActivas();
+  const editando = (t) => {
+    const e = ediciones[`trabajos:${t.id}`];
+    return e ? (
+      <span className="ts-pill-editando" title={`${e.nombre || e.usuario} está editando este trabajo`}>
+        ✎ {e.usuario || e.nombre}
+      </span>
+    ) : null;
+  };
   if (filas.length === 0) {
     return (
       <div className="ts-vacio">
@@ -4870,6 +4911,7 @@ function TablaTrabajos({ filas, compacta, onFilaClick, onImprimir, onEliminar, s
                   <div className="ts-tm-linea">
                     {t.ot && <span className="ts-tm-ot">OT {t.ot} · </span>}
                     <strong>{t.equipo}</strong>
+                    {editando(t)}
                     {t.ubicacion && <> · {t.ubicacion}</>} ·{" "}
                     <span className="ts-tm-horario">
                       {t.hora_inicio || "--:--"} - {t.hora_fin || "--:--"}
@@ -4951,7 +4993,12 @@ function TablaTrabajos({ filas, compacta, onFilaClick, onImprimir, onEliminar, s
                   {compacta ? t.equipo : t.ot || <span className="ts-texto-tenue">—</span>}
                 </span>
               </td>
-              {!compacta && <td className="ts-mono">{t.equipo}</td>}
+              {!compacta && (
+                <td className="ts-mono">
+                  {t.equipo}
+                  {editando(t)}
+                </td>
+              )}
               <td>
                 <div className="ts-clamp-2 ts-trabajo-celda" title={[t.sintoma_causa, t.descripcion].filter(Boolean).join("\n")}>
                   {t.sintoma_causa && <span className="ts-trabajo-titulo">{t.sintoma_causa}</span>}
@@ -10281,7 +10328,8 @@ function Estilos() {
          mismos anchos fijos para que sus columnas queden alineadas. */
       .ts-tabla.ts-tabla-trabajos-amplia { table-layout: fixed; width: 100%; }
       .ts-tabla-trabajos-amplia th:nth-child(1), .ts-tabla-trabajos-amplia td:nth-child(1) { width: 118px; }
-      .ts-tabla-trabajos-amplia th:nth-child(2), .ts-tabla-trabajos-amplia td:nth-child(2) { width: 78px; }
+      .ts-tabla-trabajos-amplia th:nth-child(2), .ts-tabla-trabajos-amplia td:nth-child(2) { width: 88px; }
+      .ts-tabla-trabajos td .ts-pill-editando, .ts-tabla-trabajos-amplia td .ts-pill-editando { display: block; width: fit-content; margin: 3px 0 0; }
       .ts-tabla-trabajos-amplia th:nth-child(3), .ts-tabla-trabajos-amplia td:nth-child(3) { width: auto; min-width: 0; }
       .ts-tabla-trabajos-amplia th:nth-child(4), .ts-tabla-trabajos-amplia td:nth-child(4) { width: 150px; }
       .ts-tabla-trabajos-amplia th:nth-child(5), .ts-tabla-trabajos-amplia td:nth-child(5) { width: 128px; }
@@ -10410,6 +10458,11 @@ function Estilos() {
       .ts-tm-info { min-width: 0; line-height: 1.35; }
       .ts-tm-linea { color: var(--text); font-weight: 500; font-size: calc(15px * var(--ts-escala-fuente, 1)); }
       .ts-tm-ot { color: var(--text-dim); font-weight: 500; }
+      .ts-pill-editando {
+        display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; vertical-align: 1px;
+        background: var(--red-dim); color: var(--red); font-family: inherit; font-weight: 600; white-space: nowrap;
+        font-size: calc(11px * var(--ts-escala-fuente, 1)); animation: ts-latido 1.6s ease-in-out infinite;
+      }
       .ts-texto-tenue { color: var(--text-dim); }
       .ts-tm-linea strong, .ts-tm-linea .ts-tm-horario { color: var(--text); }
       .ts-tm-info strong { font-size: calc(17px * var(--ts-escala-fuente, 1)); font-family: var(--mono, monospace); }

@@ -1230,6 +1230,62 @@ function exportarPDF(filas, columnas, titulo, opciones = {}) {
   );
 }
 
+// Impresión de los rankings de Inicio separada por flota, con el detalle de
+// cada equipo: cabecera del equipo (puesto, equipo y total), sus registros
+// del periodo y su pie (totales o indicadores).
+// flotas: [{ flota, equipos: [{ puesto, equipo, resumen, columnas, filas, pie: [[etiqueta, valor] | [texto]] }] }]
+function imprimirRankingDetallado({ titulo, flotas }) {
+  const color = registroReporte.color || "#4a8fe0";
+  const total = flotas.reduce((s, f) => s + f.equipos.length, 0);
+  const cuerpo = flotas
+    .map(({ flota, equipos }) => {
+      const bloques = equipos.length
+        ? equipos
+            .map(
+              (e) => `<div class="eq-bloque">
+              <div class="eq-cab"><span class="eq-puesto">${e.puesto}</span><b>Equipo ${escaparHTML(e.equipo)}</b><span class="eq-res">${escaparHTML(e.resumen)}</span></div>
+              <table class="doc-tabla">
+                <thead><tr>${e.columnas.map((c) => `<th>${escaparHTML(c)}</th>`).join("")}</tr></thead>
+                <tbody>${e.filas.map((f) => `<tr>${f.map((v) => `<td>${escaparHTML(v)}</td>`).join("")}</tr>`).join("")}</tbody>
+              </table>
+              ${
+                e.pie && e.pie.length
+                  ? `<div class="eq-pie">${e.pie
+                      .map((p) => (p.length === 2 ? `<span><em>${escaparHTML(p[0])}</em> ${escaparHTML(p[1])}</span>` : `<span>${escaparHTML(p[0])}</span>`))
+                      .join("")}</div>`
+                  : ""
+              }
+            </div>`
+            )
+            .join("")
+        : `<div class="doc-vacio">Sin registros en el periodo.</div>`;
+      return `<div class="flota-titulo">Flota ${escaparHTML(flota)} <span>${equipos.length} ${equipos.length === 1 ? "equipo" : "equipos"}</span></div>${bloques}`;
+    })
+    .join("");
+  abrirVistaImpresion(
+    `<html><head><title>${escaparHTML(titulo)}</title>
+    <style>
+      ${estilosDocumento(color)}
+      .flota-titulo { background: ${color}14; color: #111827; font-weight: 700; padding: 6px 10px; letter-spacing: .06em; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; font-size: 11px; border-bottom: 1.5px solid ${color}; margin: 14px 0 8px; page-break-after: avoid; break-after: avoid; }
+      .flota-titulo:first-of-type { margin-top: 0; }
+      .flota-titulo span { font-weight: 600; font-size: 9.5px; text-transform: none; letter-spacing: 0; background: ${color}; color: #fff; padding: 1px 8px; }
+      .eq-bloque { margin: 0 0 12px; page-break-inside: avoid; break-inside: avoid; }
+      .eq-cab { display: flex; align-items: center; gap: 8px; font-size: 11px; color: #111827; margin-bottom: 4px; }
+      .eq-puesto { display: inline-block; min-width: 18px; text-align: center; background: ${color}1f; color: ${color}; font-size: 9.5px; padding: 1px 5px; }
+      .eq-res { margin-left: auto; color: #4b5563; font-size: 9.5px; }
+      .doc-tabla { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 9.4px; border: 1px solid #e5e7eb; }
+      .doc-tabla th { background: #f3f4f6; color: #374151; font-weight: 700; font-size: 8px; text-transform: uppercase; letter-spacing: .04em; text-align: left; padding: 4px 6px; border-bottom: 1px solid #d1d5db; }
+      .doc-tabla td { padding: 4px 6px; border-bottom: 1px solid #eef0f2; vertical-align: top; line-height: 1.3; }
+      .doc-tabla tbody tr:last-child td { border-bottom: none; }
+      .doc-tabla tbody tr:nth-child(even) td { background: #f9fafb; }
+      .eq-pie { display: flex; flex-wrap: wrap; gap: 4px 14px; padding: 5px 6px; font-size: 9.4px; color: #111827; font-weight: 600; border: 1px solid #e5e7eb; border-top: none; background: ${color}0d; }
+      .eq-pie em { font-style: normal; font-weight: 400; color: #6b7280; }
+      .doc-vacio { color: #6b7280; font-style: italic; padding: 10px 0; text-align: center; border: 1px dashed #d1d5db; }
+    </style>
+  </head><body>${cabeceraDocumento(titulo, `<b>${total}</b> ${total === 1 ? "equipo" : "equipos"} · Emitido el ${fechaEmisionDoc()}`)}${cuerpo}</body></html>`
+  );
+}
+
 // Ficha de un solo registro (trabajo, aceite o requerimiento): datos
 // principales destacados arriba, campos en una cuadrícula y los textos
 // largos en bloques con borde de color.
@@ -3516,7 +3572,7 @@ const DIAS_RANKING = 14;
 const PERIODOS_INICIO = [
   ["7", "Últimos 7 días"],
   ["14", "Últimos 14 días"],
-  ["mes", "Último mes"],
+  ["30", "Últimos 30 días"],
 ];
 function fechaISO(d) {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
@@ -3816,7 +3872,7 @@ function textoHorasMinutos(h) {
   return `${Math.floor(total / 60)}h ${String(total % 60).padStart(2, "0")}m`;
 }
 
-function RankingPorFlota({ titulo, registros, singular, plural, conLitros, colorBarra, tituloDetalle, columnasDetalle, totalDetalle, pieDetalle }) {
+function RankingPorFlota({ titulo, registros, singular, plural, conLitros, colorBarra, tituloDetalle, columnasDetalle, totalDetalle, pieDetalle, pieImpresion }) {
   const [detalle, setDetalle] = useState(null); // { equipo, flota, items }
   const [periodo, setPeriodo] = useState("7");
   const [cantidad, setCantidad] = useState("10");
@@ -3832,33 +3888,37 @@ function RankingPorFlota({ titulo, registros, singular, plural, conLitros, color
     return { flota, lista, maximo: lista.length ? lista[0].cantidad : 1 };
   });
 
-  // Impresión con el mismo formato de las demás (encabezado, tabla y pie).
+  // Impresión con el mismo formato de las demás, separada por flota y con el
+  // detalle de cada equipo (sus registros del periodo y sus totales o
+  // indicadores), igual que al abrir el equipo en pantalla.
   function imprimir() {
-    const filas = [];
-    rankings.forEach(({ flota, lista }) =>
-      lista.forEach((item, i) =>
-        filas.push({ flota, puesto: i + 1, equipo: item.equipo, registros: item.cantidad, litros: `${item.litros} L`, ultima: formato(item.ultima) })
-      )
-    );
-    const columnas = [
-      { clave: "flota", titulo: "Flota" },
-      { clave: "puesto", titulo: "N°" },
-      { clave: "equipo", titulo: "Equipo" },
-      { clave: "registros", titulo: plural.charAt(0).toUpperCase() + plural.slice(1) },
-      ...(conLitros ? [{ clave: "litros", titulo: "Litros" }] : []),
-      { clave: "ultima", titulo: "Último registro" },
-    ];
-    exportarPDF(filas, columnas, `${titulo} · ${formato(desde)} al ${formato(fechaRef)} · ${textoCantidadEquipos(cantidad)}`);
+    imprimirRankingDetallado({
+      titulo: `${titulo} · ${formato(desde)} al ${formato(fechaRef)} · ${textoCantidadEquipos(cantidad)}`,
+      flotas: rankings.map(({ flota, lista }) => ({
+        flota,
+        equipos: lista.map((item, i) => ({
+          puesto: i + 1,
+          equipo: item.equipo,
+          resumen: `${item.cantidad} ${item.cantidad === 1 ? singular : plural}${conLitros ? ` · ${item.litros} L` : ""}`,
+          columnas: columnasDetalle.map((c) => c.titulo),
+          filas: item.items
+            .slice()
+            .sort((a, b) => (claveOrden(a) > claveOrden(b) ? 1 : -1))
+            .map((r) => columnasDetalle.map((c) => (c.texto ? c.texto(r) : c.valor(r)))),
+          pie: pieImpresion ? pieImpresion(item.equipo, desde, fechaRef, item.items) : totalDetalle ? [[totalDetalle(item.items)]] : [],
+        })),
+      })),
+    });
   }
 
   return (
     <Panel
       titulo={`${titulo} · ${formato(desde)} al ${formato(fechaRef)}`}
       acciones={
-        <>
+        <div className="ts-acciones-panel">
           <FiltroRanking periodo={periodo} setPeriodo={setPeriodo} cantidad={cantidad} setCantidad={setCantidad} />
           <BotonImprimirPanel onImprimir={imprimir} />
-        </>
+        </div>
       }
     >
       <div className="ts-grid-2">
@@ -3993,6 +4053,18 @@ function TopNoProgramados({ trabajos }) {
   return (
     <RankingPorFlota
       pieDetalle={indicadores}
+      pieImpresion={(equipo, desde, hasta, items) => {
+        const m = kpisEquipo(trabajos, equipo, desde, hasta, items);
+        return [
+          ["Fallas", m.fallas],
+          ["Tiempo de intervención", textoMinutos(m.intervencionMin)],
+          ["Tiempo detenido", textoHorasMinutos(m.horasDetenido)],
+          ["Confiabilidad", textoPorcentaje(m.confiabilidad)],
+          ["Disponibilidad", textoPorcentaje(m.disponibilidad)],
+          ["MTBF", textoHorasMinutos(m.mtbf)],
+          ["MTTR", textoHorasMinutos(m.mttr)],
+        ];
+      }}
       titulo="Equipos con más trabajos no programados"
       registros={trabajos.filter((t) => t.tipo_trabajo === "no_programado")}
       singular="trabajo"
@@ -4000,10 +4072,11 @@ function TopNoProgramados({ trabajos }) {
       tituloDetalle="Trabajos no programados"
       columnasDetalle={[
         { titulo: "Fecha", valor: (r) => formatoFecha(r.fecha), clase: "ts-mono" },
-        { titulo: "Turno", valor: (r) => <span className={"ts-badge ts-badge-" + (r.turno === "dia" ? "dia" : "noche")}>{textoTurno(r.turno)}</span> },
+        { titulo: "Turno", valor: (r) => <span className={"ts-badge ts-badge-" + (r.turno === "dia" ? "dia" : "noche")}>{textoTurno(r.turno)}</span>, texto: (r) => textoTurno(r.turno) },
         { titulo: "Horario", valor: (r) => `${r.hora_inicio || "--:--"}–${r.hora_fin || "--:--"}`, clase: "ts-mono" },
         { titulo: "Tiempo de trabajo", valor: (r) => calcularTiempoTrabajo(r.hora_inicio, r.hora_fin), clase: "ts-mono" },
-        { titulo: "Trabajo", valor: (r) => <div className="ts-clamp-2">{r.sintoma_causa || r.descripcion}</div> },
+        { titulo: "Estado final", valor: (r) => (r.estado_final === "disponible" ? "Disponible" : "No disponible") },
+        { titulo: "Trabajo", valor: (r) => <div className="ts-clamp-2">{r.sintoma_causa || r.descripcion}</div>, texto: (r) => r.sintoma_causa || r.descripcion || "" },
       ]}
       totalDetalle={(items) => {
         const total = items.reduce((s, r) => s + minutosDeTrabajo(r.hora_inicio, r.hora_fin), 0);
@@ -4025,14 +4098,18 @@ function IndicadoresMantenimiento({ trabajos }) {
   const { desde, hasta } = rango;
   const formato = (f) => f.split("-").reverse().join("/");
   const noProgramados = trabajos.filter((t) => t.tipo_trabajo === "no_programado");
-  const porFlota = listaFlotas().map((flota) => ({
-    flota,
-    filas: rankingEquiposFlota(noProgramados, flota, desde, hasta, cantidad).map((item, i) => ({
-      puesto: i + 1,
+  // Primero los de MÁS BAJO rendimiento: menor disponibilidad, luego menor
+  // confiabilidad y más fallas. Se calcula con el periodo elegido y luego se
+  // toman los N equipos del filtro.
+  const porFlota = listaFlotas().map((flota) => {
+    const todos = rankingEquiposFlota(noProgramados, flota, desde, hasta, "todos").map((item) => ({
       equipo: item.equipo,
       ...kpisEquipo(trabajos, item.equipo, desde, hasta, item.items),
-    })),
-  }));
+    }));
+    todos.sort((a, b) => a.disponibilidad - b.disponibilidad || a.confiabilidad - b.confiabilidad || b.fallas - a.fallas || b.horasDetenido - a.horasDetenido);
+    const elegidos = cantidad === "todos" ? todos : todos.slice(0, Number(cantidad) || 10);
+    return { flota, filas: elegidos.map((k, i) => ({ ...k, puesto: i + 1 })) };
+  });
   const COLUMNAS = [
     ["fallas", "Fallas", (k) => k.fallas],
     ["intervencion", "T. intervención", (k) => textoMinutos(k.intervencionMin)],
@@ -4066,10 +4143,10 @@ function IndicadoresMantenimiento({ trabajos }) {
     <Panel
       titulo={`Indicadores de mantenimiento · ${formato(desde)} al ${formato(hasta)}`}
       acciones={
-        <>
+        <div className="ts-acciones-panel">
           <FiltroRanking periodo={periodo} setPeriodo={setPeriodo} cantidad={cantidad} setCantidad={setCantidad} />
           <BotonImprimirPanel onImprimir={imprimir} />
-        </>
+        </div>
       }
     >
       {porFlota.map(({ flota, filas }) => (
@@ -4109,10 +4186,6 @@ function IndicadoresMantenimiento({ trabajos }) {
           )}
         </div>
       ))}
-      <div className="ts-campo-ayuda ts-kpi-nota">
-        Confiabilidad: probabilidad de operar un turno de 12 h sin falla (e<sup>−12/MTBF</sup>). Disponibilidad: tiempo
-        operativo ÷ tiempo del periodo. MTBF: tiempo medio entre fallas. MTTR: tiempo medio de reparación.
-      </div>
     </Panel>
   );
 }
@@ -4222,9 +4295,12 @@ function TopAdicionesMotor({ aceites }) {
       tituloDetalle="Adiciones de aceite motor"
       columnasDetalle={[
         { titulo: "Fecha", valor: (r) => formatoFecha(r.fecha), clase: "ts-mono" },
-        { titulo: "Turno", valor: (r) => <span className={"ts-badge ts-badge-" + (r.turno === "dia" ? "dia" : "noche")}>{textoTurno(r.turno)}</span> },
+        { titulo: "Turno", valor: (r) => <span className={"ts-badge ts-badge-" + (r.turno === "dia" ? "dia" : "noche")}>{textoTurno(r.turno)}</span>, texto: (r) => textoTurno(r.turno) },
+        { titulo: "Horario", valor: (r) => `${r.hora_inicio || "--:--"}–${r.hora_fin || "--:--"}`, clase: "ts-mono" },
         { titulo: "Cantidad", valor: (r) => (r.cantidad_litros === "" || r.cantidad_litros == null ? "—" : `${r.cantidad_litros} L`), clase: "ts-mono" },
         { titulo: "Tipo de aceite", valor: (r) => r.tipo_aceite },
+        { titulo: "Horómetro", valor: (r) => r.horometro || "—", clase: "ts-mono" },
+        { titulo: "Personal", valor: (r) => usuariosDoc(r.participantes).join(", ") || "—" },
       ]}
       totalDetalle={(items) => `Total agregado: ${items.reduce((s, r) => s + Number(r.cantidad_litros || 0), 0)} L`}
     />
@@ -4246,10 +4322,13 @@ function TopAdicionesRefrigerante({ aceites }) {
       tituloDetalle="Adiciones de refrigerante"
       columnasDetalle={[
         { titulo: "Fecha", valor: (r) => formatoFecha(r.fecha), clase: "ts-mono" },
-        { titulo: "Turno", valor: (r) => <span className={"ts-badge ts-badge-" + (r.turno === "dia" ? "dia" : "noche")}>{textoTurno(r.turno)}</span> },
+        { titulo: "Turno", valor: (r) => <span className={"ts-badge ts-badge-" + (r.turno === "dia" ? "dia" : "noche")}>{textoTurno(r.turno)}</span>, texto: (r) => textoTurno(r.turno) },
+        { titulo: "Horario", valor: (r) => `${r.hora_inicio || "--:--"}–${r.hora_fin || "--:--"}`, clase: "ts-mono" },
         { titulo: "Cantidad", valor: (r) => (r.cantidad_litros === "" || r.cantidad_litros == null ? "—" : `${r.cantidad_litros} L`), clase: "ts-mono" },
         { titulo: "Tipo", valor: (r) => r.tipo_aceite },
         { titulo: "Sistema", valor: (r) => r.sistema_equipo },
+        { titulo: "Horómetro", valor: (r) => r.horometro || "—", clase: "ts-mono" },
+        { titulo: "Personal", valor: (r) => usuariosDoc(r.participantes).join(", ") || "—" },
       ]}
       totalDetalle={(items) => `Total agregado: ${items.reduce((s, r) => s + Number(r.cantidad_litros || 0), 0)} L`}
     />
@@ -10760,6 +10839,7 @@ function Estilos() {
       .ts-tm-ot { color: var(--text-dim); font-weight: 500; }
       /* Inicio: botón imprimir de los cuadros e Indicadores de mantenimiento */
       .ts-btn-imprimir-panel svg { width: 16px; height: 16px; }
+      .ts-acciones-panel { display: flex; align-items: center; gap: 6px; margin-left: auto; }
       .ts-kpi-flota + .ts-kpi-flota { margin-top: 16px; }
       .ts-tabla-kpi th, .ts-tabla-kpi td { white-space: nowrap; text-align: right; }
       .ts-tabla-kpi th:nth-child(-n+2), .ts-tabla-kpi td:nth-child(-n+2) { text-align: left; }

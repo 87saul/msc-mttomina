@@ -524,17 +524,19 @@ export async function wordReporteTurno(ctx) {
           cantSplit: true,
           children: [
             new TableCell({
-              shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(color) },
+              shading: { type: ShadingType.CLEAR, color: "auto", fill: mezcla(color, 0x14 / 255) },
+              borders: { bottom: borde(color, 1.5) },
               verticalAlign: VerticalAlign.CENTER,
-              margins: { top: 75, bottom: 75, left: 150, right: 60 },
-              children: [parrafo(texto(`Flota ${s.flota}`, { px: 11, color: "#FFFFFF", mayus: true, espacio: 12 }), { conSiguiente: true })],
+              margins: { top: 90, bottom: 90, left: 150, right: 60 },
+              children: [parrafo(texto(`Flota ${s.flota}`, { px: 11, color: "#111827", peso: 700, mayus: true, espacio: 12 }), { conSiguiente: true })],
             }),
             new TableCell({
-              shading: { type: ShadingType.CLEAR, color: "auto", fill: hex(color) },
+              shading: { type: ShadingType.CLEAR, color: "auto", fill: mezcla(color, 0x14 / 255) },
+              borders: { bottom: borde(color, 1.5) },
               verticalAlign: VerticalAlign.CENTER,
-              margins: { top: 75, bottom: 75, left: 60, right: 150 },
+              margins: { top: 90, bottom: 90, left: 60, right: 150 },
               children: [
-                parrafo(texto(` ${s.total} ${s.total === 1 ? "trabajo" : "trabajos"} `, { px: 9.5, color: "#FFFFFF", fondo: mezcla(color, 0.78) }), {
+                parrafo(texto(` ${s.total} ${s.total === 1 ? "trabajo" : "trabajos"} `, { px: 9.5, peso: 600, color: "#FFFFFF", fondo: hex(color) }), {
                   alinear: AlignmentType.RIGHT,
                   conSiguiente: true,
                 }),
@@ -555,7 +557,7 @@ export async function wordReporteTurno(ctx) {
     });
   }
 
-  const ANCHOS = [6.5, 48.5, 11.5, 9.5, 12, 12];
+  const ANCHOS = [6, 49, 11, 10, 13, 11];
   function tablaTrabajos(lista) {
     if (!lista.length) {
       return new Table({
@@ -588,21 +590,21 @@ export async function wordReporteTurno(ctx) {
       const celda = (i, hijos) =>
         new TableCell({ width: { size: anchos[i], type: WidthType.DXA }, shading: fondo, borders: bordes, margins: m, children: hijos });
       const desc = [
-        ...f.lineas.map((l) => parrafo(texto(l.t, { px: 10.5, negrita: l.tit, color: l.tit ? "#111827" : "#1B1F24" }), { linea: 280 })),
-        ...(f.nota ? [parrafo(texto(`Síntoma y causa: ${f.nota}`, { px: 10.5, cursiva: true, color: gris }), { antes: 30 })] : []),
+        ...f.lineas.map((l) => parrafo(texto(l.t, { px: 12, negrita: l.tit, color: l.tit ? "#111827" : "#1B1F24" }), { linea: 240 })),
+        ...(f.nota ? [parrafo(texto(`Síntoma y causa: ${f.nota}`, { px: 12, cursiva: true, color: gris }), { antes: 30 })] : []),
       ];
       const personal = f.personal.length
-        ? f.personal.map((p) => parrafo(texto(p, { px: 10.5, color: "#374151" })))
-        : [parrafo(texto("Sin intervención", { px: 10.5, cursiva: true, color: "#9CA3AF" }))];
+        ? f.personal.map((p) => parrafo(texto(p, { px: 12, color: "#374151" })))
+        : [parrafo(texto("Sin intervención", { px: 12, cursiva: true, color: "#9CA3AF" }))];
       const [fe, te] = f.ok ? PILL.ok : PILL.no;
       return new TableRow({
         cantSplit: true,
         children: [
-          celda(0, [parrafo(texto(f.equipo, { px: 10.5, color: "#111827" }))]),
+          celda(0, [parrafo(texto(f.equipo, { px: 12, color: "#111827" }))]),
           celda(1, desc.length ? desc : [parrafo(texto(""))]),
           celda(2, personal),
-          celda(3, [parrafo(texto(f.ubicacion, { px: 10.5 }))]),
-          celda(4, [parrafo(texto(f.horario, { px: 10.5 }))]),
+          celda(3, [parrafo(texto(f.ubicacion, { px: 12 }))]),
+          celda(4, [parrafo(texto(String(f.horario).replace(/ /g, "\u00A0"), { px: 11 }))]),
           celda(5, [parrafo(texto(f.ok ? " Operativo " : " No Operativo ", { px: 8.5, peso: 600, color: te, fondo: fe }))]),
         ],
       });

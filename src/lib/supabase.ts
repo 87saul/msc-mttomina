@@ -7,6 +7,9 @@ const url = (import.meta.env.VITE_SUPABASE_URL || "").trim();
 const clave = (import.meta.env.VITE_SUPABASE_ANON_KEY || "").trim();
 
 export const supabaseConfigurado = Boolean(url && clave);
+// Para pedidos que deben salir aunque se cierre la app (fetch keepalive).
+export const SUPABASE_URL = url;
+export const SUPABASE_KEY = clave;
 
 export const supabase: SupabaseClient = supabaseConfigurado
   ? createClient(url, clave, { auth: { persistSession: true, autoRefreshToken: true } })

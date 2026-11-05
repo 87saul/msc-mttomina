@@ -1,7 +1,7 @@
 // @ts-nocheck
 // TRUCK SHOP — aplicación principal (escritorio y celular).
 // Todos los datos se leen y guardan en Supabase (ver src/lib/datos.ts).
-import React, { useState, useMemo, useEffect, useRef } from "react";
+import React, { useState, useMemo, useEffect, useRef, useContext } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import * as db from "../lib/datos";
 import { useBloqueoEdicion, iniciarPresencia, useEdicionesActivas } from "../lib/bloqueos";
@@ -301,6 +301,40 @@ function etiquetaPersona(personal, nombre) {
   const p = personal.find((x) => x.nombre === nombre);
   return (p && p.usuario) || nombre;
 }
+
+// Impresiones y descargas (PDF, Word, Excel): en "Personal" va solo el
+// usuario de cada persona (ej. RaulQ, QuintinC) para ocupar menos espacio.
+// El personal de apoyo escrito a mano sale tal cual.
+const registroPersonal = { lista: [] };
+const normalizarNombre = (t) =>
+  String(t || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .toLowerCase()
+    .replace(/[.,]/g, " ")
+    .trim();
+function usuarioDoc(nombre) {
+  if (!nombre) return nombre;
+  const lista = registroPersonal.lista || [];
+  const n = normalizarNombre(nombre);
+  // 1) Nombre completo o usuario exactos.
+  const exacto = lista.find((x) => normalizarNombre(x.nombre) === n || normalizarNombre(x.usuario) === n);
+  if (exacto) return exacto.usuario || nombre;
+  // 2) Nombre corto de los reportes ("Raul", "Raymundo A."): una sola
+  //    persona cuyo nombre tenga esa palabra (y la inicial, si la hay).
+  const partes = n.split(/\s+/).filter(Boolean);
+  if (!partes.length || partes.length > 2) return nombre;
+  const [palabra, inicial] = partes;
+  if (palabra.length < 3) return nombre;
+  const candidatos = lista.filter((x) => {
+    const t = normalizarNombre(x.nombre).split(/\s+/);
+    const i = t.indexOf(palabra);
+    if (i < 0) return false;
+    return !inicial || t.some((o, j) => j !== i && o.startsWith(inicial));
+  });
+  return candidatos.length === 1 && candidatos[0].usuario ? candidatos[0].usuario : nombre;
+}
+const usuariosDoc = (lista) => (lista || []).map(usuarioDoc);
 
 // Si se indica la flota (la del equipo del trabajo), solo se muestra el
 // personal del subgrupo de esa flota (p. ej. GRUPO 1 – CARGUIO), incluido su
@@ -1122,10 +1156,10 @@ function pillDoc(valor) {
 }
 
 // Columnas cortas (no se parten en dos líneas) y columnas de texto largo.
-const COLS_CORTAS_DOC = ["ot", "id", "equipo", "flota", "fecha", "fecha_solicitud", "turno", "hora_inicio", "hora_fin", "cantidad_litros", "horometro", "cantidad", "numero_parte", "grupo", "tipo_operacion", "estado", "estado_final"];
+const COLS_CORTAS_DOC = ["puesto", "registros", "litros", "ultima", "fallas", "intervencion", "detenido", "confiabilidad", "disponibilidad", "mtbf", "mttr", "ot", "id", "equipo", "flota", "fecha", "fecha_solicitud", "turno", "hora_inicio", "hora_fin", "cantidad_litros", "horometro", "cantidad", "numero_parte", "grupo", "tipo_operacion", "estado", "estado_final"];
 const COLS_LARGAS_DOC = ["descripcion", "sintoma_causa", "observaciones", "personal"];
 const COLS_PILL_DOC = ["turno", "estado", "estado_final", "tipo_operacion"];
-const COLS_NUM_DOC = ["cantidad_litros", "horometro", "cantidad"];
+const COLS_NUM_DOC = ["cantidad_litros", "horometro", "cantidad", "puesto", "registros", "litros", "fallas", "intervencion", "detenido", "confiabilidad", "disponibilidad", "mtbf", "mttr"];
 
 // Lista de registros en PDF. Si la tabla tiene muchas columnas (p. ej.
 // Aceites o Historial), la hoja se imprime en horizontal para que entre.
@@ -1335,7 +1369,7 @@ function imprimirReporteTurno(trabajos, impresoPor) {
           t.observaciones ? `<div class="nota">Síntoma y causa: ${escaparHTML(t.observaciones)}</div>` : "",
         ].join("");
         const personal = (t.participantes || []).length
-          ? t.participantes.map(escaparHTML).join("<br>")
+          ? usuariosDoc(t.participantes).map(escaparHTML).join("<br>")
           : `<span class="tenue">Sin intervención</span>`;
         const ok = t.estado_final === "disponible";
         return `<tr>
@@ -1447,22 +1481,23 @@ function imprimirReporteTurno(trabajos, impresoPor) {
       .enc-doc div { display: flex; justify-content: space-between; gap: 8px; padding: 1.5px 0; }
       .enc-doc span { color: #6b7280; }
       .flota { margin-top: 4px; }
-      .flota-titulo { background: ${color}; color: #fff; font-weight: 400; padding: 5px 10px; letter-spacing: .06em; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; font-size: 11px; }
-      .flota-titulo span { font-weight: 500; font-size: 9.5px; text-transform: none; letter-spacing: 0; background: rgba(255,255,255,.22); padding: 1px 8px; }
+      .flota-titulo { background: ${color}14; color: #111827; font-weight: 700; padding: 6px 10px; letter-spacing: .06em; text-transform: uppercase; display: flex; justify-content: space-between; align-items: center; font-size: 11px; border-bottom: 1.5px solid ${color}; }
+      .flota-titulo span { font-weight: 600; font-size: 9.5px; text-transform: none; letter-spacing: 0; background: ${color}; color: #fff; padding: 1px 8px; }
       h3 { font-size: 10.5px; font-weight: 400; margin: 12px 0 6px; color: #111827; display: flex; align-items: center; gap: 6px; }
       h3 .cuenta { font-size: 9px; font-weight: 400; color: ${color}; background: ${color}1f; padding: 1px 7px; }
       .tabla { border-collapse: separate; border-spacing: 0; width: 100%; border: 1px solid #e3e6ea; overflow: hidden; table-layout: fixed; }
       /* Mismo ancho de columnas en todas las tablas del reporte */
-      .tabla th:nth-child(1) { width: 6.5%; } .tabla th:nth-child(2) { width: 48.5%; } .tabla th:nth-child(3) { width: 11.5%; }
-      .tabla th:nth-child(4) { width: 9.5%; } .tabla th:nth-child(5) { width: 12%; } .tabla th:nth-child(6) { width: 12%; }
+      .tabla th:nth-child(1) { width: 6%; } .tabla th:nth-child(2) { width: 49%; } .tabla th:nth-child(3) { width: 11%; }
+      .tabla th:nth-child(4) { width: 10%; } .tabla th:nth-child(5) { width: 13%; } .tabla th:nth-child(6) { width: 11%; }
       .tabla td { overflow-wrap: anywhere; }
       .tabla tr { page-break-inside: avoid; break-inside: avoid; }
       .tabla th { background: ${color}14; color: #374151; font-size: 8.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; text-align: left; padding: 6px 7px; border-bottom: 1.5px solid ${color}; }
-      .tabla td { padding: 6px 7px; border-bottom: 1px solid #eef0f2; vertical-align: top; text-align: left; }
+      /* Letra de 9 pt (12 px) con interlineado sencillo para leer mejor */
+      .tabla td { padding: 6px 7px; border-bottom: 1px solid #eef0f2; vertical-align: top; text-align: left; font-size: 12px; line-height: 1.15; }
       .tabla tbody tr:last-child td { border-bottom: none; }
       .tabla tbody tr:nth-child(even) td { background: #f9fafb; }
-      td.eq { font-weight: 400; white-space: nowrap; font-size: 10.5px; color: #111827; }
-      td.desc { line-height: 1.4; }
+      td.eq { font-weight: 400; white-space: nowrap; font-size: 12px; color: #111827; }
+      td.desc { line-height: 1.15; }
       td.desc .tit { font-weight: 700; color: #111827; }
       td.desc .nota { font-style: italic; color: #6b7280; margin-top: 2px; }
       td.pers { color: #374151; }
@@ -1506,7 +1541,7 @@ function exportarWordReporteTurno(trabajos, impresoPor, nombreArchivo = "reporte
         ...lineas.map((l) => ({ t: l, tit: esSubtitulo(l) })),
       ],
       nota: t.observaciones || "",
-      personal: t.participantes || [],
+      personal: usuariosDoc(t.participantes),
       ubicacion: t.ubicacion || "",
       horario: t.hora_inicio || t.hora_fin ? `${t.hora_inicio || "--:--"} – ${t.hora_fin || "--:--"}` : "",
       ok: t.estado_final === "disponible",
@@ -1574,7 +1609,7 @@ function imprimirRegistroTrabajo(trabajo) {
     bloques: [
       ["Falla del equipo", trabajo.sintoma_causa],
       ["Descripción del trabajo", trabajo.descripcion],
-      ["Personal participante", (trabajo.participantes || []).join(", ")],
+      ["Personal participante", usuariosDoc(trabajo.participantes).join(", ")],
       ["Síntoma y causa de la falla", trabajo.observaciones],
     ],
   });
@@ -1607,7 +1642,7 @@ function imprimirRegistroAceite(aceite) {
       ...(aceite.tipo_operacion === "adicion" && aceite.verificaciones
         ? [["Verificaciones", VERIFICACIONES_ADICION.map(([k, t]) => `${aceite.verificaciones[k] ? "☑" : "☐"} ${t}`).join("\n")]]
         : []),
-      ["Personal participante", (aceite.participantes || []).join(", ")],
+      ["Personal participante", usuariosDoc(aceite.participantes).join(", ")],
       ["Observaciones", aceite.observaciones],
     ],
   });
@@ -1627,7 +1662,7 @@ function imprimirRegistroRequerimiento(req) {
     campos: [
       ["Número de parte", req.numero_parte],
       ["Cantidad", req.cantidad],
-      ["Solicitante", req.solicitante],
+      ["Solicitante", usuarioDoc(req.solicitante)],
     ],
     bloques: [["Descripción del repuesto o material", req.descripcion]],
   });
@@ -1659,7 +1694,7 @@ function filasExportTrabajos(trabajos) {
     turno: t.turno === "dia" ? "Día" : "Noche",
     grupo: nombreGrupo(t.grupo),
     estado_final: t.estado_final === "disponible" ? "Disponible" : "No disponible",
-    personal: (t.participantes || []).join(", "),
+    personal: usuariosDoc(t.participantes).join(", "),
   }));
 }
 
@@ -1697,7 +1732,7 @@ function filasExportAceites(aceites) {
     tipo_trabajo: a.tipo_trabajo === "programado" ? "Programado" : "No programado",
     tipo_operacion: textoOperacionAceite(a.tipo_operacion),
     verificaciones: textoVerificaciones(a),
-    personal: (a.participantes || []).join(", "),
+    personal: usuariosDoc(a.participantes).join(", "),
   }));
 }
 
@@ -1717,6 +1752,7 @@ function filasExportRequerimientos(requerimientos) {
   return requerimientos.map((r) => ({
     ...r,
     estado: ESTADO_REQ_LABEL[r.estado] || r.estado,
+    solicitante: usuarioDoc(r.solicitante),
   }));
 }
 
@@ -1995,6 +2031,7 @@ export default function TruckShopApp() {
   usuarioEnSesion.nombre = datosUsuario.nombre;
   usuarioEnSesion.usuario = datosUsuario.usuario;
   usuarioEnSesion.esAdmin = esAdmin;
+  registroPersonal.lista = personal;
 
   // Registro releído después de que otra persona lo editó (ver ModalFormulario).
   useEffect(() => {
@@ -3457,6 +3494,8 @@ function Dashboard({ indicadores, filtros, setFiltros, trabajosFiltrados, trabaj
       <TopAdicionesRefrigerante aceites={aceitesTodos} />
 
       <TopNoProgramados trabajos={trabajos} />
+
+      <IndicadoresMantenimiento trabajos={trabajos} />
     </div>
   );
 }
@@ -3583,6 +3622,83 @@ function SelectorPeriodo({ valor, onCambiar }) {
   );
 }
 
+// Cantidad de equipos por flota en los cuadros de Inicio.
+const CANTIDADES_EQUIPOS = [
+  ["10", "10 equipos"],
+  ["20", "20 equipos"],
+  ["todos", "Todos"],
+];
+function SelectorCantidadEquipos({ valor, onCambiar }) {
+  return (
+    <div className="ts-filtros ts-filtros-periodo">
+      <div className="ts-filtro ts-filtro-vista">
+        <span>Número de equipos</span>
+        <div className="ts-segmento" role="tablist">
+          {CANTIDADES_EQUIPOS.map(([clave, texto]) => (
+            <button
+              key={clave}
+              type="button"
+              role="tab"
+              aria-selected={valor === clave}
+              className={"ts-segmento-op" + (valor === clave ? " activo" : "")}
+              onClick={() => onCambiar(clave)}
+            >
+              {texto}
+            </button>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+const textoCantidadEquipos = (c) => (c === "todos" ? "Todos los equipos" : `${c} equipos`);
+
+// Filtro de los cuadros de Inicio: periodo + número de equipos.
+function FiltroRanking({ periodo, setPeriodo, cantidad, setCantidad }) {
+  return (
+    <FiltroPanel resumen={`${rangoPeriodo(periodo).etiqueta} · ${textoCantidadEquipos(cantidad)}`} activo>
+      <SelectorPeriodo valor={periodo} onCambiar={setPeriodo} />
+      <SelectorCantidadEquipos valor={cantidad} onCambiar={setCantidad} />
+    </FiltroPanel>
+  );
+}
+
+// Equipos de una flota ordenados por cantidad de registros en el periodo.
+function rankingEquiposFlota(registros, flota, desde, hasta, cantidad) {
+  const conteo = {};
+  registros.forEach((r) => {
+    if (r.flota !== flota) return;
+    if (r.fecha < desde || r.fecha > hasta) return;
+    if (!conteo[r.equipo]) conteo[r.equipo] = { equipo: r.equipo, cantidad: 0, litros: 0, ultima: r.fecha, items: [] };
+    conteo[r.equipo].cantidad += 1;
+    conteo[r.equipo].items.push(r);
+    conteo[r.equipo].litros += Number(r.cantidad_litros || 0);
+    if (r.fecha > conteo[r.equipo].ultima) conteo[r.equipo].ultima = r.fecha;
+  });
+  const lista = Object.values(conteo).sort(
+    (a, b) => b.cantidad - a.cantidad || b.litros - a.litros || (a.ultima < b.ultima ? 1 : -1)
+  );
+  return cantidad === "todos" ? lista : lista.slice(0, Number(cantidad) || 10);
+}
+
+// Botón de imprimir de los cuadros de Inicio.
+function BotonImprimirPanel({ onImprimir, titulo = "Imprimir (PDF)" }) {
+  return (
+    <button
+      type="button"
+      className="ts-btn-tres-puntos ts-btn-imprimir-panel"
+      title={titulo}
+      aria-label={titulo}
+      onClick={(e) => {
+        e.stopPropagation();
+        onImprimir();
+      }}
+    >
+      <IconoImprimir />
+    </button>
+  );
+}
+
 // ---------------------------------------------------------------------------
 // Indicadores de confiabilidad de un equipo (pie del detalle en Inicio)
 // ---------------------------------------------------------------------------
@@ -3626,7 +3742,8 @@ function textoFechaHora(ms) {
 //  - Detención: desde que empieza un trabajo con el equipo disponible hasta
 //    que un trabajo lo deja "Disponible". Incluye los relevos de turno. Los
 //    trabajos de turnos siguientes sobre la misma avería son la misma detención.
-//  - Falla: detención que empezó con un trabajo NO programado en la ventana.
+//  - Falla: detención que empezó con un trabajo NO programado y que cae (toda
+//    o en parte) dentro de la ventana.
 //  - Disponibilidad = (horas del periodo − horas detenido) ÷ horas del periodo.
 //  - MTBF = horas operativas ÷ fallas.  MTTR = horas detenido por fallas ÷ fallas.
 function confiabilidadEquipo(trabajosEquipo, ini, fin) {
@@ -3655,9 +3772,12 @@ function confiabilidadEquipo(trabajosEquipo, ini, fin) {
     const a = Math.max(d.ini, ini);
     const b = Math.min(finDet, fin);
     if (b > a) horasDetenido += (b - a) / 3600000;
-    if (d.falla && d.ini >= ini && d.ini < fin) {
+    // Falla: la que empezó en el periodo o la que ya venía de antes y sigue
+    // dentro del periodo (así un equipo parado todo el periodo no queda con
+    // 0 fallas y confiabilidad 100 %). Solo cuenta su tiempo dentro del periodo.
+    if (d.falla && d.ini < fin && finDet > ini) {
       fallas += 1;
-      horasFallas += (Math.min(finDet, fin) - d.ini) / 3600000;
+      horasFallas += (Math.min(finDet, fin) - Math.max(d.ini, ini)) / 3600000;
     }
   });
   const horasPeriodo = (fin - ini) / 3600000;
@@ -3668,10 +3788,26 @@ function confiabilidadEquipo(trabajosEquipo, ini, fin) {
     horasDetenido,
     fallas,
     disponibilidad: horasPeriodo > 0 ? (horasOperativas / horasPeriodo) * 100 : 100,
+    // Confiabilidad: probabilidad de operar un turno completo (12 h) sin
+    // falla, R = e^(−12 / MTBF). Sin fallas en el periodo = 100 %.
+    confiabilidad: fallas ? Math.exp(-HORAS_MISION_CONFIABILIDAD / (horasOperativas / fallas || 1e-9)) * 100 : 100,
     mtbf: fallas ? horasOperativas / fallas : null,
     mttr: fallas ? horasFallas / fallas : null,
   };
 }
+
+const HORAS_MISION_CONFIABILIDAD = 12;
+const textoPorcentaje = (v) => `${(Math.round(v * 10) / 10).toFixed(1)} %`;
+
+// Todos los indicadores de un equipo en el periodo (pie del detalle,
+// "Indicadores de mantenimiento" e impresiones).
+function kpisEquipo(trabajos, equipo, desde, hasta, itemsNoProgramados) {
+  const { ini, fin } = ventanaPeriodo(desde, hasta, trabajos);
+  const m = confiabilidadEquipo(trabajos.filter((t) => t.equipo === equipo), ini, fin);
+  const intervencion = itemsNoProgramados.reduce((s, r) => s + minutosDeTrabajo(r.hora_inicio, r.hora_fin), 0);
+  return { ...m, ini, fin, intervencionMin: intervencion };
+}
+const textoMinutos = (min) => `${Math.floor(min / 60)}h ${min % 60}m`;
 
 // Horas decimales → "13h 18m"
 function textoHorasMinutos(h) {
@@ -3683,6 +3819,7 @@ function textoHorasMinutos(h) {
 function RankingPorFlota({ titulo, registros, singular, plural, conLitros, colorBarra, tituloDetalle, columnasDetalle, totalDetalle, pieDetalle }) {
   const [detalle, setDetalle] = useState(null); // { equipo, flota, items }
   const [periodo, setPeriodo] = useState("7");
+  const [cantidad, setCantidad] = useState("10");
   const rango = rangoPeriodo(periodo);
   const fechaRef = rango.hasta;
   const desde = rango.desde;
@@ -3691,29 +3828,37 @@ function RankingPorFlota({ titulo, registros, singular, plural, conLitros, color
   const flotasMostradas = listaFlotas();
 
   const rankings = flotasMostradas.map((flota) => {
-    const conteo = {};
-    registros.forEach((r) => {
-      if (r.flota !== flota) return;
-      if (r.fecha < desde || r.fecha > fechaRef) return;
-      if (!conteo[r.equipo]) conteo[r.equipo] = { equipo: r.equipo, cantidad: 0, litros: 0, ultima: r.fecha, items: [] };
-      conteo[r.equipo].cantidad += 1;
-      conteo[r.equipo].items.push(r);
-      conteo[r.equipo].litros += Number(r.cantidad_litros || 0);
-      if (r.fecha > conteo[r.equipo].ultima) conteo[r.equipo].ultima = r.fecha;
-    });
-    const lista = Object.values(conteo)
-      .sort((a, b) => b.cantidad - a.cantidad || b.litros - a.litros || (a.ultima < b.ultima ? 1 : -1))
-      .slice(0, 10);
+    const lista = rankingEquiposFlota(registros, flota, desde, fechaRef, cantidad);
     return { flota, lista, maximo: lista.length ? lista[0].cantidad : 1 };
   });
+
+  // Impresión con el mismo formato de las demás (encabezado, tabla y pie).
+  function imprimir() {
+    const filas = [];
+    rankings.forEach(({ flota, lista }) =>
+      lista.forEach((item, i) =>
+        filas.push({ flota, puesto: i + 1, equipo: item.equipo, registros: item.cantidad, litros: `${item.litros} L`, ultima: formato(item.ultima) })
+      )
+    );
+    const columnas = [
+      { clave: "flota", titulo: "Flota" },
+      { clave: "puesto", titulo: "N°" },
+      { clave: "equipo", titulo: "Equipo" },
+      { clave: "registros", titulo: plural.charAt(0).toUpperCase() + plural.slice(1) },
+      ...(conLitros ? [{ clave: "litros", titulo: "Litros" }] : []),
+      { clave: "ultima", titulo: "Último registro" },
+    ];
+    exportarPDF(filas, columnas, `${titulo} · ${formato(desde)} al ${formato(fechaRef)} · ${textoCantidadEquipos(cantidad)}`);
+  }
 
   return (
     <Panel
       titulo={`${titulo} · ${formato(desde)} al ${formato(fechaRef)}`}
       acciones={
-        <FiltroPanel resumen={rango.etiqueta} activo>
-          <SelectorPeriodo valor={periodo} onCambiar={setPeriodo} />
-        </FiltroPanel>
+        <>
+          <FiltroRanking periodo={periodo} setPeriodo={setPeriodo} cantidad={cantidad} setCantidad={setCantidad} />
+          <BotonImprimirPanel onImprimir={imprimir} />
+        </>
       }
     >
       <div className="ts-grid-2">
@@ -3821,13 +3966,13 @@ function TopNoProgramados({ trabajos }) {
   // El periodo termina en el último turno reportado (los días sin reportes
   // no cuentan como tiempo detenido).
   function indicadores(equipo, desde, hasta, items) {
-    const { ini, fin } = ventanaPeriodo(desde, hasta, trabajos);
-    const m = confiabilidadEquipo(trabajos.filter((t) => t.equipo === equipo), ini, fin);
-    const intervencion = items.reduce((s, r) => s + minutosDeTrabajo(r.hora_inicio, r.hora_fin), 0);
+    const m = kpisEquipo(trabajos, equipo, desde, hasta, items);
+    const { ini, fin } = m;
     const filas = [
       ["Fallas", m.fallas],
-      ["Tiempo total de intervención", `${Math.floor(intervencion / 60)}h ${intervencion % 60}m`],
+      ["Tiempo total de intervención", textoMinutos(m.intervencionMin)],
       ["Tiempo detenido", textoHorasMinutos(m.horasDetenido)],
+      ["Confiabilidad", textoPorcentaje(m.confiabilidad)],
       ["Disponibilidad", `${Math.round(m.disponibilidad * 10) / 10} %`],
       ["MTBF", textoHorasMinutos(m.mtbf)],
       ["MTTR", textoHorasMinutos(m.mttr)],
@@ -3865,6 +4010,110 @@ function TopNoProgramados({ trabajos }) {
         return `Tiempo total de intervención: ${Math.floor(total / 60)}h ${total % 60}m`;
       }}
     />
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Inicio: Indicadores de mantenimiento por equipo (mismos equipos y filtros
+// que "Equipos con más trabajos no programados"): fallas, tiempos,
+// confiabilidad, disponibilidad, MTBF y MTTR. Se puede imprimir.
+// ---------------------------------------------------------------------------
+function IndicadoresMantenimiento({ trabajos }) {
+  const [periodo, setPeriodo] = useState("7");
+  const [cantidad, setCantidad] = useState("10");
+  const rango = rangoPeriodo(periodo);
+  const { desde, hasta } = rango;
+  const formato = (f) => f.split("-").reverse().join("/");
+  const noProgramados = trabajos.filter((t) => t.tipo_trabajo === "no_programado");
+  const porFlota = listaFlotas().map((flota) => ({
+    flota,
+    filas: rankingEquiposFlota(noProgramados, flota, desde, hasta, cantidad).map((item, i) => ({
+      puesto: i + 1,
+      equipo: item.equipo,
+      ...kpisEquipo(trabajos, item.equipo, desde, hasta, item.items),
+    })),
+  }));
+  const COLUMNAS = [
+    ["fallas", "Fallas", (k) => k.fallas],
+    ["intervencion", "T. intervención", (k) => textoMinutos(k.intervencionMin)],
+    ["detenido", "T. detenido", (k) => textoHorasMinutos(k.horasDetenido)],
+    ["confiabilidad", "Confiabilidad", (k) => textoPorcentaje(k.confiabilidad)],
+    ["disponibilidad", "Disponibilidad", (k) => textoPorcentaje(k.disponibilidad)],
+    ["mtbf", "MTBF", (k) => textoHorasMinutos(k.mtbf)],
+    ["mttr", "MTTR", (k) => textoHorasMinutos(k.mttr)],
+  ];
+  function imprimir() {
+    const filas = [];
+    porFlota.forEach(({ flota, filas: f }) =>
+      f.forEach((k) => {
+        const fila = { flota, puesto: k.puesto, equipo: k.equipo };
+        COLUMNAS.forEach(([clave, , valor]) => (fila[clave] = String(valor(k))));
+        filas.push(fila);
+      })
+    );
+    exportarPDF(
+      filas,
+      [
+        { clave: "flota", titulo: "Flota" },
+        { clave: "puesto", titulo: "N°" },
+        { clave: "equipo", titulo: "Equipo" },
+        ...COLUMNAS.map(([clave, titulo]) => ({ clave, titulo })),
+      ],
+      `Indicadores de mantenimiento · ${formato(desde)} al ${formato(hasta)} · ${textoCantidadEquipos(cantidad)}`
+    );
+  }
+  return (
+    <Panel
+      titulo={`Indicadores de mantenimiento · ${formato(desde)} al ${formato(hasta)}`}
+      acciones={
+        <>
+          <FiltroRanking periodo={periodo} setPeriodo={setPeriodo} cantidad={cantidad} setCantidad={setCantidad} />
+          <BotonImprimirPanel onImprimir={imprimir} />
+        </>
+      }
+    >
+      {porFlota.map(({ flota, filas }) => (
+        <div key={flota} className="ts-kpi-flota">
+          <h4 className="ts-grafico-subtitulo">Flota {flota}</h4>
+          {filas.length === 0 ? (
+            <div className="ts-vacio">Sin trabajos no programados en el periodo.</div>
+          ) : (
+            <div className="ts-tabla-wrap">
+              <table className="ts-tabla ts-tabla-kpi">
+                <thead>
+                  <tr>
+                    <th>N°</th>
+                    <th>Equipo</th>
+                    {COLUMNAS.map(([clave, titulo]) => (
+                      <th key={clave} className={clave === "confiabilidad" || clave === "disponibilidad" ? "ts-kpi-destacado" : ""}>
+                        {titulo}
+                      </th>
+                    ))}
+                  </tr>
+                </thead>
+                <tbody>
+                  {filas.map((k) => (
+                    <tr key={k.equipo}>
+                      <td className="ts-mono">{k.puesto}</td>
+                      <td className="ts-mono">{k.equipo}</td>
+                      {COLUMNAS.map(([clave, , valor]) => (
+                        <td key={clave} className={"ts-mono" + (clave === "confiabilidad" || clave === "disponibilidad" ? " ts-kpi-destacado" : "")}>
+                          {valor(k)}
+                        </td>
+                      ))}
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </div>
+      ))}
+      <div className="ts-campo-ayuda ts-kpi-nota">
+        Confiabilidad: probabilidad de operar un turno de 12 h sin falla (e<sup>−12/MTBF</sup>). Disponibilidad: tiempo
+        operativo ÷ tiempo del periodo. MTBF: tiempo medio entre fallas. MTTR: tiempo medio de reparación.
+      </div>
+    </Panel>
   );
 }
 
@@ -4530,6 +4779,32 @@ function IconoChevron({ abierto }) {
 // celular (a pantalla completa). Se cierra con la ×, con Escape o al guardar;
 // tocar fuera NO la cierra, para no perder lo escrito por accidente.
 // ---------------------------------------------------------------------------
+// Al cerrar un formulario con la X (o Escape) con cambios sin guardar, se
+// pregunta si guardarlos o descartarlos. Cada formulario se registra con
+// useConfirmarCierre(form, guardar).
+const ContextoCierre = React.createContext(null);
+function useConfirmarCierre(form, guardar) {
+  const ctx = useContext(ContextoCierre);
+  const base = useRef(null);
+  const actual = useRef(form);
+  actual.current = form;
+  const refGuardar = useRef(guardar);
+  refGuardar.current = guardar;
+  useEffect(() => {
+    // Se toma el estado inicial cuando el formulario ya terminó de armarse.
+    const t = setTimeout(() => (base.current = JSON.stringify(actual.current)), 300);
+    if (ctx)
+      ctx.current = {
+        sucio: () => base.current !== null && JSON.stringify(actual.current) !== base.current,
+        guardar: () => refGuardar.current(),
+      };
+    return () => {
+      clearTimeout(t);
+      if (ctx) ctx.current = null;
+    };
+  }, []);
+}
+
 // Usuario conectado (nombre y usuario), para avisar a los demás quién está
 // editando un registro.
 const usuarioEnSesion = { nombre: "", usuario: "" };
@@ -4540,11 +4815,19 @@ const usuarioEnSesion = { nombre: "", usuario: "" };
 // sale del cuadro o cierra la app, se cargan los datos más recientes y se
 // habilita la edición.
 function ModalFormulario({ onCerrar, children, bloqueo = null, onRecargado }) {
+  const refCierre = useRef(null);
+  const [preguntarCierre, setPreguntarCierre] = useState(false);
+  const refIntentarCerrar = useRef(null);
+  function intentarCerrar() {
+    if (refCierre.current && refCierre.current.sucio()) setPreguntarCierre(true);
+    else onCerrar();
+  }
+  refIntentarCerrar.current = intentarCerrar;
   useEffect(() => {
     const anterior = document.body.style.overflow;
     document.body.style.overflow = "hidden";
     function alTeclear(e) {
-      if (e.key === "Escape") onCerrar();
+      if (e.key === "Escape") refIntentarCerrar.current();
     }
     document.addEventListener("keydown", alTeclear);
     return () => {
@@ -4591,9 +4874,35 @@ function ModalFormulario({ onCerrar, children, bloqueo = null, onRecargado }) {
               : `Editando: ${nombreEditor}`}
           </div>
         )}
-        <button type="button" className="ts-modal-form-cerrar" title="Cerrar sin guardar" onClick={onCerrar}>
+        <button type="button" className="ts-modal-form-cerrar" title="Cerrar" onClick={intentarCerrar}>
           <IconoFabCerrar />
         </button>
+        {preguntarCierre && (
+          <div className="ts-confirmar-cierre-fondo" onClick={() => setPreguntarCierre(false)}>
+            <div className="ts-confirmar-cierre" role="alertdialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+              <div className="ts-confirmar-cierre-titulo">¿Guardar los cambios?</div>
+              <div className="ts-confirmar-cierre-texto">Hiciste cambios en este registro que aún no se guardaron.</div>
+              <div className="ts-confirmar-cierre-botones">
+                <button type="button" className="ts-btn-ghost ts-btn-descartar" onClick={onCerrar}>
+                  Descartar
+                </button>
+                <button type="button" className="ts-btn-ghost" onClick={() => setPreguntarCierre(false)}>
+                  Seguir editando
+                </button>
+                <button
+                  type="button"
+                  className="ts-btn"
+                  onClick={() => {
+                    setPreguntarCierre(false);
+                    refCierre.current && refCierre.current.guardar();
+                  }}
+                >
+                  Guardar cambios
+                </button>
+              </div>
+            </div>
+          </div>
+        )}
         {estado === "ocupado" ? (
           <Panel titulo="Registro en edición">
             <div className="ts-edicion-ocupada">
@@ -4618,7 +4927,9 @@ function ModalFormulario({ onCerrar, children, bloqueo = null, onRecargado }) {
             <div className="ts-edicion-ocupada">Cargando los cambios guardados por la otra persona…</div>
           </Panel>
         ) : (
-          <React.Fragment key={version}>{children}</React.Fragment>
+          <ContextoCierre.Provider value={refCierre}>
+            <React.Fragment key={version}>{children}</React.Fragment>
+          </ContextoCierre.Provider>
         )}
       </div>
     </div>
@@ -4747,8 +5058,18 @@ function IconoBandera({ color }) {
 
 // Botón de bandera a la izquierda de la fila: al tocarlo se elige el color
 // (o se quita la marca). Sin onMarcar solo muestra la marca (lectura).
+// Posición fija del menú de marcas junto al botón: así no queda recortado
+// dentro de la tabla (p. ej. cuando hay una sola fila).
+function posicionMenu(e, alto = 60) {
+  const r = e.currentTarget.getBoundingClientRect();
+  const abajo = window.innerHeight - r.bottom > alto + 12;
+  const left = Math.max(8, Math.min(r.left, window.innerWidth - 230));
+  return abajo ? { position: "fixed", top: r.bottom + 4, left, zIndex: 95 } : { position: "fixed", bottom: window.innerHeight - r.top + 4, left, zIndex: 95 };
+}
+
 function MarcadorFila({ marca, onMarcar }) {
   const [abierto, setAbierto] = useState(false);
+  const [pos, setPos] = useState(null);
   const actual = MARCAS.find((m) => m.clave === marca);
   if (!onMarcar) {
     return actual ? (
@@ -4763,14 +5084,17 @@ function MarcadorFila({ marca, onMarcar }) {
         type="button"
         className={"ts-marcador" + (actual ? " ts-marcador-activo" : "")}
         title={actual ? `Marca ${actual.texto} · cambiar` : "Marcar"}
-        onClick={() => setAbierto((v) => !v)}
+        onClick={(e) => {
+          setPos(posicionMenu(e, 50));
+          setAbierto((v) => !v);
+        }}
       >
         <IconoBandera color={actual?.color} />
       </button>
       {abierto && (
         <>
           <div className="ts-overlay-cerrar" onClick={() => setAbierto(false)} />
-          <div className="ts-marcador-menu">
+          <div className="ts-marcador-menu" style={pos || undefined}>
             {MARCAS.map((m) => (
               <button
                 key={m.clave}
@@ -4807,6 +5131,7 @@ function MarcadorFila({ marca, onMarcar }) {
 // filtros): Todas, Rojo, Amarillo, Verde, Solo marcadas o Sin marca.
 function FiltroMarcas({ valor, onCambiar }) {
   const [abierto, setAbierto] = useState(false);
+  const [pos, setPos] = useState(null);
   const color = MARCAS.find((m) => m.clave === valor)?.color;
   return (
     <span className="ts-marcador-wrap" onClick={(e) => e.stopPropagation()}>
@@ -4814,7 +5139,10 @@ function FiltroMarcas({ valor, onCambiar }) {
         type="button"
         className={"ts-marcador ts-filtro-marca-btn" + (valor !== "todas" ? " ts-marcador-activo" : "")}
         title={`Filtrar por marca: ${TEXTO_FILTRO_MARCA[valor]}`}
-        onClick={() => setAbierto((v) => !v)}
+        onClick={(e) => {
+          setPos(posicionMenu(e, 240));
+          setAbierto((v) => !v);
+        }}
       >
         <IconoBandera color={color || (valor === "marcadas" ? "var(--amber)" : undefined)} />
         <span className="ts-filtro-marca-flecha">▾</span>
@@ -4822,7 +5150,7 @@ function FiltroMarcas({ valor, onCambiar }) {
       {abierto && (
         <>
           <div className="ts-overlay-cerrar" onClick={() => setAbierto(false)} />
-          <div className="ts-export-menu ts-filtro-marca-menu">
+          <div className="ts-export-menu ts-filtro-marca-menu" style={pos || undefined}>
             {Object.entries(TEXTO_FILTRO_MARCA).map(([clave, texto]) => {
               const m = MARCAS.find((x) => x.clave === clave);
               return (
@@ -5174,7 +5502,6 @@ function Trabajos({ trabajos, onMarcar, puedeCrear, onCrear, onActualizar, onEli
           else onCrear(datos);
           cerrar();
         }}
-        onAutoguardar={registro ? (datos) => onActualizar(registro.id, datos) : undefined}
       />
     );
   }
@@ -5333,7 +5660,7 @@ function Trabajos({ trabajos, onMarcar, puedeCrear, onCrear, onActualizar, onEli
   );
 }
 
-function FormularioTrabajo({ onGuardar, onAutoguardar, inicial, personal, equipos }) {
+function FormularioTrabajo({ onGuardar, inicial, personal, equipos }) {
   const [form, setForm] = useState(() => {
     if (inicial) return { ...inicial, participantes: inicial.participantes || [], sintoma_causa: inicial.sintoma_causa || "" };
     return {
@@ -5389,32 +5716,8 @@ function FormularioTrabajo({ onGuardar, onAutoguardar, inicial, personal, equipo
     const equipo = equipos.find((eq) => eq.codigo === form.equipo);
     onGuardar({ ...form, flota: equipo?.flota || "" });
   }
-
-  // Al EDITAR un trabajo, cada cambio se guarda al instante (a los ~0,8 s de
-  // dejar de escribir), para que si la persona cierra la app sin pulsar
-  // "Guardar cambios" lo llenado no se pierda y el siguiente lo vea.
-  const [estadoAutoguardado, setEstadoAutoguardado] = useState(""); // "" | "pendiente" | "guardado"
-  const [horaAutoguardado, setHoraAutoguardado] = useState("");
-  const ultimoGuardado = useRef(null);
-  useEffect(() => {
-    if (!inicial || !onAutoguardar) return;
-    const equipo = equipos.find((eq) => eq.codigo === form.equipo);
-    const datos = { ...form, flota: equipo?.flota || "" };
-    const firma = JSON.stringify(datos);
-    if (ultimoGuardado.current === null) {
-      ultimoGuardado.current = firma; // estado inicial: nada que guardar
-      return;
-    }
-    if (firma === ultimoGuardado.current) return;
-    setEstadoAutoguardado("pendiente");
-    const t = setTimeout(() => {
-      ultimoGuardado.current = firma;
-      onAutoguardar(datos);
-      setEstadoAutoguardado("guardado");
-      setHoraAutoguardado(new Date().toLocaleTimeString("es", { hour: "2-digit", minute: "2-digit" }));
-    }, 800);
-    return () => clearTimeout(t);
-  }, [form]);
+  // X o Escape con cambios sin guardar: preguntar.
+  useConfirmarCierre(form, () => enviar({ preventDefault() {} }));
 
   return (
     <Panel titulo={inicial ? `Editar trabajo — ${inicial.equipo}` : "Nuevo registro de trabajo"} subtitulo={<SelloRegistro inicial={inicial} />}>
@@ -5548,15 +5851,6 @@ function FormularioTrabajo({ onGuardar, onAutoguardar, inicial, personal, equipo
         </label>
 
         <div className="ts-form-acciones">
-          {inicial && onAutoguardar && (
-            <span className="ts-autoguardado">
-              {estadoAutoguardado === "pendiente"
-                ? "Guardando…"
-                : estadoAutoguardado === "guardado"
-                ? `✓ Cambios guardados ${horaAutoguardado}`
-                : "Los cambios se guardan al instante"}
-            </span>
-          )}
           <button type="button" className="ts-btn" onClick={enviar}>
             {inicial ? "Guardar cambios" : "Guardar trabajo"}
           </button>
@@ -5984,6 +6278,8 @@ function FormularioAceite({ onGuardar, inicial, tiposAceite, sistemasEquipo, per
       horometro: esDerrame ? "" : form.horometro === "" ? 0 : Number(form.horometro),
     });
   }
+  // X o Escape con cambios sin guardar: preguntar.
+  useConfirmarCierre(form, () => enviar({ preventDefault() {} }));
 
   return (
     <Panel
@@ -6724,6 +7020,8 @@ function FormularioRequerimiento({ onGuardar, inicial, personal, solicitantes = 
     e.preventDefault();
     onGuardar(form);
   }
+  // X o Escape con cambios sin guardar: preguntar.
+  useConfirmarCierre(form, () => enviar({ preventDefault() {} }));
 
   return (
     <Panel titulo={inicial ? `Editar requerimiento — ${inicial.id}` : "Nuevo requerimiento"} subtitulo={<SelloRegistro inicial={inicial} />}>
@@ -10326,7 +10624,9 @@ function Estilos() {
       .ts-tabla-trabajos-amplia td:last-child .ts-acciones-fila { padding-left: 4px; }
       /* Pestaña Trabajos: las tablas de programados y no programados usan los
          mismos anchos fijos para que sus columnas queden alineadas. */
-      .ts-tabla.ts-tabla-trabajos-amplia { table-layout: fixed; width: 100%; }
+      /* Ancho mínimo: en pantallas angostas (celular horizontal) la columna
+         Trabajo no se aplasta; la tabla se recorre con la barra inferior. */
+      .ts-tabla.ts-tabla-trabajos-amplia { table-layout: fixed; width: 100%; min-width: 1060px; }
       .ts-tabla-trabajos-amplia th:nth-child(1), .ts-tabla-trabajos-amplia td:nth-child(1) { width: 118px; }
       .ts-tabla-trabajos-amplia th:nth-child(2), .ts-tabla-trabajos-amplia td:nth-child(2) { width: 88px; }
       .ts-tabla-trabajos td .ts-pill-editando, .ts-tabla-trabajos-amplia td .ts-pill-editando { display: block; width: fit-content; margin: 3px 0 0; }
@@ -10458,6 +10758,13 @@ function Estilos() {
       .ts-tm-info { min-width: 0; line-height: 1.35; }
       .ts-tm-linea { color: var(--text); font-weight: 500; font-size: calc(15px * var(--ts-escala-fuente, 1)); }
       .ts-tm-ot { color: var(--text-dim); font-weight: 500; }
+      /* Inicio: botón imprimir de los cuadros e Indicadores de mantenimiento */
+      .ts-btn-imprimir-panel svg { width: 16px; height: 16px; }
+      .ts-kpi-flota + .ts-kpi-flota { margin-top: 16px; }
+      .ts-tabla-kpi th, .ts-tabla-kpi td { white-space: nowrap; text-align: right; }
+      .ts-tabla-kpi th:nth-child(-n+2), .ts-tabla-kpi td:nth-child(-n+2) { text-align: left; }
+      .ts-tabla-kpi td.ts-kpi-destacado { font-weight: 600; color: var(--text); }
+      .ts-kpi-nota { margin-top: 12px; }
       .ts-pill-editando {
         display: inline-block; margin-left: 6px; padding: 1px 7px; border-radius: 999px; vertical-align: 1px;
         background: var(--red-dim); color: var(--red); font-family: inherit; font-weight: 600; white-space: nowrap;
@@ -10538,6 +10845,13 @@ function Estilos() {
       }
       .ts-modal-editor-punto { width: 7px; height: 7px; border-radius: 50%; background: currentColor; flex-shrink: 0; animation: ts-latido 1.6s ease-in-out infinite; }
       .ts-modal-editor-ocupado { background: var(--red-dim); color: var(--red); }
+      /* Confirmación al cerrar con cambios sin guardar */
+      .ts-confirmar-cierre-fondo { position: fixed; inset: 0; z-index: 120; background: rgba(0,0,0,.35); display: flex; align-items: center; justify-content: center; padding: 16px; }
+      .ts-confirmar-cierre { background: var(--panel); color: var(--text); width: min(440px, 100%); border-radius: 8px; padding: 20px 20px 16px; box-shadow: 0 12px 40px rgba(0,0,0,.3); }
+      .ts-confirmar-cierre-titulo { font-size: calc(16px * var(--ts-escala-fuente, 1)); font-weight: 600; margin-bottom: 6px; }
+      .ts-confirmar-cierre-texto { font-size: calc(13.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); margin-bottom: 18px; line-height: 1.45; }
+      .ts-confirmar-cierre-botones { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+      .ts-confirmar-cierre .ts-btn-descartar { color: var(--red); border-color: var(--red); margin-right: auto; }
       @keyframes ts-latido { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
       .ts-edicion-ocupada { display: flex; flex-direction: column; gap: 12px; padding: 6px 4px 4px; font-size: calc(14px * var(--ts-escala-fuente, 1)); color: var(--text); line-height: 1.5; }
       .ts-edicion-ocupada-icono { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--red-dim); color: var(--red); }
@@ -10971,7 +11285,6 @@ function Estilos() {
       .ts-config-reporte-opciones .ts-check { font-size: calc(13px * var(--ts-escala-fuente, 1)); color: var(--text); }
       .ts-config-reporte-opciones input[type="checkbox"] { width: 16px; height: 16px; }
       .ts-form-acciones { display: flex; justify-content: flex-end; align-items: center; gap: 12px; margin-top: 4px; }
-      .ts-autoguardado { margin-right: auto; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); }
 
       .ts-chips-select { display: flex; flex-wrap: wrap; gap: 6px; }
       .ts-chip {

@@ -425,6 +425,13 @@ function minutosEnTurno(hora, turno) {
   return m;
 }
 
+// ¿La hora de fin queda antes que la de inicio dentro del turno? (Día
+// 06:00–18:00; Noche 18:00–06:00, donde 00:59 va después de 19:00.)
+function horasInvertidas(horaInicio, horaFin, turno) {
+  if (!horaInicio || !horaFin) return false;
+  return minutosEnTurno(horaFin, turno) < minutosEnTurno(horaInicio, turno);
+}
+
 function compararPorHorarioDeTurno(a, b) {
   if (a.fecha !== b.fecha) return a.fecha < b.fecha ? -1 : 1;
   const ta = TURNO_RANGO[a.turno];
@@ -486,6 +493,57 @@ const ESTADO_REQ_LABEL = {
   en_proceso_compra: "En proceso de compra",
   comprado: "Comprado",
 };
+
+// Secuencia del requerimiento: cada cambio de estado con fecha y usuario.
+// Los requerimientos antiguos (sin secuencia guardada) arrancan con la
+// solicitud.
+function seguimientoDe(req) {
+  if (Array.isArray(req.seguimiento) && req.seguimiento.length) return req.seguimiento;
+  return [{ estado: "pendiente_aprobacion", fecha: req.creado_en || req.fecha_solicitud, usuario: req.solicitante, nombre: req.solicitante }];
+}
+const NIVEL_ESTADO_REQ = { pendiente_aprobacion: 0, aprobado: 1, no_aprobado: 1, en_proceso_compra: 2, comprado: 3 };
+// Los 4 pasos (Solicitado → Aprobado → En proceso de compra → Comprado),
+// con la fecha y el usuario del último registro de cada uno.
+function pasosRequerimiento(req) {
+  const seg = seguimientoDe(req);
+  const ultimo = (estado) => seg.filter((p) => p.estado === estado).slice(-1)[0] || null;
+  const nivel = NIVEL_ESTADO_REQ[req.estado] ?? 0;
+  const noAprobado = req.estado === "no_aprobado";
+  const paso = (clave, titulo, n) => {
+    const hecho = nivel >= n && !(noAprobado && n > 1);
+    return { clave, titulo, hecho, dato: hecho ? ultimo(clave) : null };
+  };
+  return [
+    paso("pendiente_aprobacion", "Solicitado", 0),
+    noAprobado ? { clave: "no_aprobado", titulo: "No aprobado", hecho: true, dato: ultimo("no_aprobado"), rechazo: true } : paso("aprobado", "Aprobado", 1),
+    paso("en_proceso_compra", "En proceso de compra", 2),
+    paso("comprado", "Comprado", 3),
+  ];
+}
+// "2026-11-06T15:37" → "06/11/2026 15:37"; "2026-11-06" → "06/11/2026"
+function fechaHoraReq(v) {
+  if (!v) return "";
+  const [f, h] = String(v).split("T");
+  const fecha = f.split("-").reverse().join("/");
+  return h ? `${fecha} ${h.slice(0, 5)}` : fecha;
+}
+// Fechas clave para impresiones y descargas.
+function fechasRequerimiento(req) {
+  const pasos = pasosRequerimiento(req);
+  const d = (clave) => (pasos.find((p) => p.clave === clave) || {}).dato;
+  const compra = d("en_proceso_compra");
+  const recibido = d("comprado");
+  return {
+    solicitud: fechaHoraReq((d("pendiente_aprobacion") || {}).fecha) || fechaHoraReq(req.fecha_solicitud),
+    aprobacion: fechaHoraReq((d("aprobado") || {}).fecha),
+    aprobado_por: usuarioDoc((d("aprobado") || {}).usuario || ""),
+    no_aprobado: fechaHoraReq((d("no_aprobado") || {}).fecha),
+    inicio_compra: fechaHoraReq((compra || {}).fecha),
+    orden_compra: (compra || {}).orden_compra || "",
+    llegada_prevista: fechaHoraReq((compra || {}).fecha_llegada),
+    recepcion: fechaHoraReq((recibido || {}).fecha_recepcion || (recibido || {}).fecha),
+  };
+}
 
 function deriveEstadoEquipo(codigo, trabajos) {
   const registros = trabajos
@@ -1705,25 +1763,121 @@ function imprimirRegistroAceite(aceite) {
 }
 
 // Imprime la ficha completa de un requerimiento.
-function imprimirRegistroRequerimiento(req) {
-  imprimirFicha({
-    titulo: "Requerimiento",
-    destacado: `N° ${req.id || "—"}`,
-    chips: [
-      ["Equipo", req.equipo],
-      ["Flota", req.flota],
-      ["Fecha de solicitud", fechaDoc(req.fecha_solicitud)],
-      ["Estado", ESTADO_REQ_LABEL[req.estado] || req.estado],
-    ],
-    campos: [
-      ["Número de parte", req.numero_parte],
-      ["Cantidad", req.cantidad],
-      ["Solicitante", usuarioDoc(req.solicitante)],
-    ],
-    bloques: [["Descripción del repuesto o material", req.descripcion]],
-  });
+// --- Requerimientos impresos: fila de la tabla + secuencia del proceso
+// (Solicitado → Aprobado → En proceso de compra → Comprado), igual que en la
+// app pero sin botones.
+function estilosReqDoc(color) {
+  return `
+      .req-tabla { border-collapse: separate; border-spacing: 0; width: 100%; font-size: 9.6px; }
+      .req-tabla th { color: #6b7280; font-weight: 600; font-size: 9px; text-align: left; padding: 6px 6px; border-bottom: 1px solid #e5e7eb; white-space: nowrap; }
+      .req-tabla td { padding: 7px 6px 5px; vertical-align: middle; }
+      .req-tabla tr.req-fila td { border-top: 1px solid #e5e7eb; }
+      .req-tabla tr.req-fila:first-child td { border-top: none; }
+      .req-tabla tr.req-fila.con-seg td { padding-bottom: 2px; }
+      .req-tabla td.mono { font-family: ui-monospace, "SFMono-Regular", Consolas, monospace; font-size: 9.2px; white-space: nowrap; }
+      .req-tabla tr.req-seg td { padding: 2px 6px 9px; }
+      .req-tabla tbody { page-break-inside: auto; }
+      .req-tabla tr { page-break-inside: avoid; break-inside: avoid; }
+      .seg { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+      .seg-paso .barra { height: 3px; border-radius: 3px; background: #e5e7eb; margin-bottom: 4px; }
+      .seg-paso.hecho .barra { background: ${color}59; }
+      .seg-paso.actual .barra { background: ${color}; }
+      .seg-paso.rechazo .barra { background: #b42318; }
+      .seg-paso .tit { display: flex; align-items: center; gap: 5px; font-size: 9.4px; font-weight: 600; color: #6b7280; }
+      .seg-paso.hecho .tit { color: #111827; }
+      .seg-paso .ico { width: 11px; height: 11px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; font-size: 7px; font-weight: 700; border: 1px solid #d1d5db; color: #6b7280; }
+      .seg-paso.hecho .ico { background: ${color}; border-color: ${color}; color: #fff; }
+      .seg-paso.rechazo .ico { background: #b42318; border-color: #b42318; }
+      .seg-paso .meta, .seg-paso .extra { font-size: 8.6px; color: #6b7280; padding-left: 16px; }
+      .seg-paso .extra { color: #111827; }
+  `;
 }
-
+function htmlSeguimientoReq(req) {
+  const pasos = pasosRequerimiento(req);
+  const actual = pasos.filter((p) => p.hecho).length - 1;
+  return `<div class="seg">${pasos
+    .map((p, i) => {
+      const d = p.dato || {};
+      const fecha = fechaHoraReq(p.clave === "comprado" && d.fecha_recepcion ? d.fecha_recepcion : d.fecha);
+      const meta = p.hecho ? `${escaparHTML(fecha || "—")}${d.usuario ? ` · ${escaparHTML(usuarioDoc(d.usuario))}` : ""}` : "Pendiente";
+      const extra =
+        p.hecho && p.clave === "en_proceso_compra" && (d.orden_compra || d.fecha_llegada)
+          ? `<div class="extra">${d.orden_compra ? `OC ${escaparHTML(d.orden_compra)}` : ""}${d.orden_compra && d.fecha_llegada ? " · " : ""}${d.fecha_llegada ? `Llega ${escaparHTML(fechaHoraReq(d.fecha_llegada))}` : ""}</div>`
+          : p.hecho && d.motivo
+          ? `<div class="extra">${escaparHTML(d.motivo)}</div>`
+          : "";
+      const clases = ["seg-paso", p.hecho ? "hecho" : "", i === actual ? "actual" : "", p.rechazo ? "rechazo" : ""].join(" ");
+      return `<div class="${clases}"><div class="barra"></div><div class="tit"><span class="ico">${p.hecho ? (p.rechazo ? "✕" : "✓") : i + 1}</span>${escaparHTML(p.titulo)}</div><div class="meta">${meta}</div>${extra}</div>`;
+    })
+    .join("")}</div>`;
+}
+function htmlTablaReq(lista, siempreSeguimiento = false) {
+  const cab = ["N°", "Equipo", "Parte", "Descripción", "Cant.", "Solicitante", "Fecha", "Estado"];
+  const filas = lista
+    .map((r) => {
+      const conSeg = siempreSeguimiento || r.estado !== "pendiente_aprobacion";
+      return `<tr class="req-fila${conSeg ? " con-seg" : ""}">
+          <td class="mono">${escaparHTML(r.id)}</td>
+          <td class="mono">${escaparHTML(r.equipo)}</td>
+          <td class="mono">${escaparHTML(r.numero_parte)}</td>
+          <td>${escaparHTML(r.descripcion)}</td>
+          <td class="mono">${escaparHTML(r.cantidad)}</td>
+          <td>${escaparHTML(usuarioDoc(r.solicitante))}</td>
+          <td class="mono">${escaparHTML(r.fecha_solicitud)}</td>
+          <td>${pillDoc(ESTADO_REQ_LABEL[r.estado] || r.estado) || escaparHTML(r.estado)}</td>
+        </tr>${conSeg ? `<tr class="req-seg"><td colspan="8">${htmlSeguimientoReq(r)}</td></tr>` : ""}`;
+    })
+    .join("");
+  return `<table class="req-tabla"><thead><tr>${cab.map((c) => `<th>${c}</th>`).join("")}</tr></thead><tbody>${filas}</tbody></table>`;
+}
+// Impresión de un requerimiento (botón 🖨 de la fila): mismo diseño que el
+// cuadro emergente — datos en una fila, descripción y proceso.
+function imprimirRegistroRequerimiento(req) {
+  const color = registroReporte.color || "#4a8fe0";
+  const dato = (e, v) => `<div class="dato"><span>${escaparHTML(e)}</span><b>${escaparHTML(v === "" || v == null ? "—" : v)}</b></div>`;
+  const estado = pillDoc(ESTADO_REQ_LABEL[req.estado] || req.estado) || escaparHTML(req.estado);
+  abrirVistaImpresion(`<html><head><title>Requerimiento ${escaparHTML(req.id)}</title>
+    <style>
+      ${estilosDocumento(color)}
+      .datos { display: grid; grid-template-columns: repeat(6, 1fr); gap: 10px; margin: 4px 0 14px; }
+      .dato span, .subt { display: block; font-size: 8.5px; color: #6b7280; text-transform: uppercase; letter-spacing: .05em; margin-bottom: 3px; }
+      .dato b { font-size: 11px; font-weight: 500; color: #111827; }
+      .desc { background: #f4f2ef; padding: 9px 11px; font-size: 11px; color: #111827; margin-bottom: 14px; white-space: pre-wrap; }
+      .subt { margin-bottom: 6px; }
+      ${estilosReqDoc(color)}
+      .seg-paso .tit { font-size: 10px; }
+      .seg-paso .meta, .seg-paso .extra { font-size: 9px; }
+    </style></head><body>
+    ${cabeceraDocumento(`Requerimiento ${req.id}`, `${estado} · Emitido el ${fechaEmisionDoc()}`)}
+    <div class="datos">
+      ${dato("Equipo", req.equipo)}
+      ${dato("Flota", req.flota)}
+      ${dato("Número de parte", req.numero_parte)}
+      ${dato("Cantidad", req.cantidad)}
+      ${dato("Solicitante", usuarioDoc(req.solicitante))}
+      ${dato("Fecha de solicitud", fechaDoc(req.fecha_solicitud))}
+    </div>
+    <div class="subt">Descripción del repuesto o material</div>
+    <div class="desc">${escaparHTML(req.descripcion || "—")}</div>
+    <div class="subt">Proceso</div>
+    ${htmlSeguimientoReq(req)}
+  </body></html>`);
+}
+// Impresión general (Exportar → PDF): tabla con la secuencia debajo de cada
+// requerimiento.
+function imprimirListaRequerimientos(lista) {
+  const color = registroReporte.color || "#4a8fe0";
+  const detalle = `<b>${lista.length}</b> ${lista.length === 1 ? "registro" : "registros"} · Emitido el ${fechaEmisionDoc()}`;
+  abrirVistaImpresion(`<html><head><title>Requerimientos</title>
+    <style>
+      ${estilosDocumento(color)}
+      ${estilosReqDoc(color)}
+      .doc-vacio { color: #6b7280; font-style: italic; padding: 18px 0; text-align: center; border: 1px dashed #d1d5db; }
+    </style></head><body>
+    ${cabeceraDocumento("Requerimientos", detalle)}
+    ${lista.length ? htmlTablaReq(lista) : `<div class="doc-vacio">Sin registros con los filtros actuales.</div>`}
+  </body></html>`);
+}
 
 const COLUMNAS_EXPORT_TRABAJOS = [
   { clave: "ot", titulo: "OT" },
@@ -1802,6 +1956,11 @@ const COLUMNAS_EXPORT_REQUERIMIENTOS = [
   { clave: "solicitante", titulo: "Solicitante" },
   { clave: "fecha_solicitud", titulo: "Fecha de solicitud" },
   { clave: "estado", titulo: "Estado" },
+  { clave: "fecha_aprobacion", titulo: "Aprobación" },
+  { clave: "fecha_inicio_compra", titulo: "Inicio de compra" },
+  { clave: "orden_compra", titulo: "Orden de compra" },
+  { clave: "fecha_llegada", titulo: "Llegada prevista" },
+  { clave: "fecha_recepcion", titulo: "Recepción" },
 ];
 
 function filasExportRequerimientos(requerimientos) {
@@ -1809,6 +1968,16 @@ function filasExportRequerimientos(requerimientos) {
     ...r,
     estado: ESTADO_REQ_LABEL[r.estado] || r.estado,
     solicitante: usuarioDoc(r.solicitante),
+    ...(() => {
+      const f = fechasRequerimiento(r);
+      return {
+        fecha_aprobacion: f.aprobacion,
+        fecha_inicio_compra: f.inicio_compra,
+        orden_compra: f.orden_compra,
+        fecha_llegada: f.llegada_prevista,
+        fecha_recepcion: f.recepcion,
+      };
+    })(),
   }));
 }
 
@@ -2473,7 +2642,13 @@ export default function TruckShopApp() {
 
   async function agregarRequerimiento(nuevo) {
     try {
-      const fila = await db.insertar("requerimientos", { ...nuevo, estado: "pendiente_aprobacion", creado_en: marcaDeTiempo() });
+      const ahora = marcaDeTiempo();
+      const fila = await db.insertar("requerimientos", {
+        ...nuevo,
+        estado: "pendiente_aprobacion",
+        creado_en: ahora,
+        seguimiento: [{ estado: "pendiente_aprobacion", fecha: ahora, usuario: datosUsuario.usuario, nombre: datosUsuario.nombre }],
+      });
       setRequerimientos((prev) => (prev.some((r) => r.id === fila.id) ? prev.map((r) => (r.id === fila.id ? fila : r)) : [...prev, fila]));
     } catch (e) {
       avisarError(e);
@@ -2491,9 +2666,16 @@ export default function TruckShopApp() {
     db.eliminar("requerimientos", id).catch(errorYRecargar);
   }
 
-  function cambiarEstadoRequerimiento(id, nuevoEstado) {
-    setRequerimientos((prev) => prev.map((r) => (r.id === id ? { ...r, estado: nuevoEstado } : r)));
-    db.actualizar("requerimientos", id, { estado: nuevoEstado }).catch(errorYRecargar);
+  // Cada cambio de estado queda en la secuencia del requerimiento (fecha,
+  // usuario y datos: orden de compra, llegada prevista, recepción).
+  function cambiarEstadoRequerimiento(id, nuevoEstado, datos = {}) {
+    const actual = requerimientos.find((r) => r.id === id);
+    if (!actual) return;
+    const paso = { estado: nuevoEstado, fecha: marcaDeTiempo(), usuario: datosUsuario.usuario, nombre: datosUsuario.nombre, ...datos };
+    const nuevo = { ...actual, estado: nuevoEstado, seguimiento: [...seguimientoDe(actual), paso], editado_en: marcaDeTiempo() };
+    setRequerimientos((prev) => prev.map((r) => (r.id === id ? nuevo : r)));
+    // Se envía el registro completo para no perder los datos adicionales.
+    db.actualizar("requerimientos", id, nuevo).catch(errorYRecargar);
   }
 
   // Catálogos (tipos de aceite y sistemas de equipo)
@@ -3054,9 +3236,12 @@ export default function TruckShopApp() {
           {vistaActiva === "requerimientos" && (
             <Requerimientos
               registros={requerimientos}
-              puedeCrear={permisos.crearRequerimiento}
-              puedeAprobar={permisos.aprobarRequerimiento}
-              puedeAvanzarCompra={permisos.avanzarCompra}
+              /* Secuencia del requerimiento por rol: lo crean Supervisor y
+                 Técnico; lo aprueba solo el Supervisor; "En proceso de
+                 compra" y "Comprado" solo el Planificador. */
+              puedeCrear={permisos.crearRequerimiento && rol !== "Planificador"}
+              puedeAprobar={permisos.aprobarRequerimiento && (rol === "Supervisor" || rol === "Administrador")}
+              puedeAvanzarCompra={permisos.avanzarCompra && rol === "Planificador"}
               onCrear={agregarRequerimiento}
               onActualizar={actualizarRequerimiento}
               onEliminar={eliminarRequerimiento}
@@ -3065,7 +3250,7 @@ export default function TruckShopApp() {
               solicitantesAutorizados={personal
                 .filter((p) => p.activo && permisosPorRol[rolDePersona(p)]?.crearRequerimiento)
                 .map((p) => p.nombre)}
-              solicitanteActual={datosUsuario.nombre}
+              solicitanteActual={datosUsuario.usuario || datosUsuario.nombre}
               equipos={equipos}
               mostrarFiltros={mostrarFiltros}
             />          )}
@@ -3767,7 +3952,9 @@ function tramoTrabajo(t) {
   const noche = t.turno === "noche";
   const ini = t.hora_inicio ? minutosEnTurno(t.hora_inicio, t.turno) : noche ? 18 * 60 : 6 * 60;
   let fin = t.hora_fin ? minutosEnTurno(t.hora_fin, t.turno) : noche ? 30 * 60 : 18 * 60;
-  if (fin < ini) fin += 24 * 60;
+  // Hora de fin anterior al inicio en el mismo turno = error de digitación:
+  // no se le asigna duración (antes se tomaba como casi 24 h detenido).
+  if (fin < ini) fin = ini;
   return { s: base + ini * 60000, e: base + fin * 60000 };
 }
 
@@ -5790,8 +5977,16 @@ function FormularioTrabajo({ onGuardar, inicial, personal, equipos }) {
     });
   }
 
+  // Hora de fin anterior a la de inicio dentro del mismo turno (p. ej. noche
+  // 00:50 → 00:13): es un error de digitación y alteraría los indicadores.
+  const horasInvalidas = horasInvertidas(form.hora_inicio, form.hora_fin, form.turno);
+  const [avisoHoras, setAvisoHoras] = useState(false);
   function enviar(e) {
     e.preventDefault();
+    if (horasInvalidas) {
+      setAvisoHoras(true);
+      return;
+    }
     const equipo = equipos.find((eq) => eq.codigo === form.equipo);
     onGuardar({ ...form, flota: equipo?.flota || "" });
   }
@@ -5840,7 +6035,14 @@ function FormularioTrabajo({ onGuardar, inicial, personal, equipos }) {
 
           <div className="ts-campo">
             <span>Tiempo de trabajo</span>
-            <div className="ts-tiempo-calculado">{calcularTiempoTrabajo(form.hora_inicio, form.hora_fin)}</div>
+            <div className={"ts-tiempo-calculado" + (horasInvalidas ? " ts-tiempo-invalido" : "")}>
+              {horasInvalidas ? "Revisar horas" : calcularTiempoTrabajo(form.hora_inicio, form.hora_fin)}
+            </div>
+            {horasInvalidas && (
+              <span className={"ts-aviso-horas" + (avisoHoras ? " ts-aviso-horas-fuerte" : "")}>
+                La hora de finalización es anterior a la de inicio en este turno.
+              </span>
+            )}
           </div>
 
           <CampoSelect
@@ -6571,7 +6773,7 @@ function Requerimientos({
   onCrear,
   onActualizar,
   onEliminar,
-  onCambiarEstado,
+  onCambiarEstado: cambiarEstado,
   personal,
   solicitantesAutorizados = [],
   solicitanteActual,
@@ -6581,11 +6783,27 @@ function Requerimientos({
   const [mostrarForm, setMostrarForm] = useState(false);
   const [editando, setEditando] = useState(null);
   const [aEliminar, setAEliminar] = useState(null);
+  // Cambio de estado pendiente de confirmar: { req, estado }
+  const [cambioPedido, setCambioPedido] = useState(null);
+  const onCambiarEstado = (id, estado) => {
+    const req = registros.find((r) => r.id === id);
+    if (req && estado !== req.estado) setCambioPedido({ req, estado });
+  };
+  // Solo se edita mientras está "Pendiente de aprobación".
+  const editable = (r) => puedeCrear && r.estado === "pendiente_aprobacion";
 
   function abrirEdicion(registro) {
-    if (!puedeCrear) return;
+    if (!editable(registro)) return;
     setEditando(registro);
     setMostrarForm(true);
+  }
+  // Clic en la fila: si aún se puede editar, abre el formulario; si no, un
+  // cuadro con toda la información del proceso.
+  const [detalleId, setDetalleId] = useState(null);
+  const detalle = detalleId ? registros.find((r) => r.id === detalleId) : null;
+  function abrirFila(r) {
+    if (editable(r)) abrirEdicion(r);
+    else setDetalleId(r.id);
   }
 
   function cerrar() {
@@ -6665,7 +6883,7 @@ function Requerimientos({
     const filas = filasExportRequerimientos(registrosFiltrados);
     if (formato === "excel") exportarExcel(filas, COLUMNAS_EXPORT_REQUERIMIENTOS, "requerimientos");
     if (formato === "word") exportarWord(filas, COLUMNAS_EXPORT_REQUERIMIENTOS, "requerimientos", "Requerimientos");
-    if (formato === "pdf") exportarPDF(filas, COLUMNAS_EXPORT_REQUERIMIENTOS, "Requerimientos");
+    if (formato === "pdf") imprimirListaRequerimientos(registrosFiltrados);
   }
 
   return (
@@ -6793,8 +7011,8 @@ function Requerimientos({
             return (
               <div
                 key={r.id}
-                className={"ts-am-card" + (puedeCrear ? " ts-tm-card-clicable" : "")}
-                onClick={puedeCrear ? () => abrirEdicion(r) : undefined}
+                className="ts-am-card ts-tm-card-clicable"
+                onClick={() => abrirFila(r)}
               >
                 <div className="ts-am-fila1">
                   <strong className="ts-am-equipo">{r.equipo || "—"}</strong>
@@ -6825,7 +7043,7 @@ function Requerimientos({
                   {r.cantidad !== "" && r.cantidad != null && <strong> · Cant. {r.cantidad}</strong>}
                 </div>
                 <div className="ts-req-fila3">
-                  {r.solicitante || "—"} · {formatoFecha(r.fecha_solicitud)}
+                  {usuarioDoc(r.solicitante) || "—"} · {formatoFecha(r.fecha_solicitud)}
                 </div>
                 {tieneAccion && (
                   <div className="ts-req-acciones" onClick={(e) => e.stopPropagation()}>
@@ -6861,15 +7079,15 @@ function Requerimientos({
               {registrosFiltrados.map((r) => (
                 <React.Fragment key={r.id}>
                 <tr
-                  className={puedeCrear ? "ts-fila-clicable" : ""}
-                  onClick={puedeCrear ? () => abrirEdicion(r) : undefined}
+                  className="ts-fila-clicable"
+                  onClick={() => abrirFila(r)}
                 >
                   <td className="ts-mono">{r.id}</td>
                   <td className="ts-mono">{r.equipo}</td>
                   <td className="ts-mono">{r.numero_parte}</td>
                   <td><div className="ts-clamp-2">{r.descripcion}</div></td>
                   <td className="ts-mono">{r.cantidad}</td>
-                  <td><div className="ts-clamp-2">{r.solicitante}</div></td>
+                  <td><div className="ts-clamp-2">{usuarioDoc(r.solicitante)}</div></td>
                   <td className="ts-mono">{r.fecha_solicitud}</td>
                   <td onClick={(e) => e.stopPropagation()}>
                     <EstadoRequerimientoEditable
@@ -6915,6 +7133,24 @@ function Requerimientos({
         </div>
       </Panel>
 
+      {detalle && (
+        <ModalFormulario onCerrar={() => setDetalleId(null)}>
+          <DetalleRequerimiento req={detalle} />
+        </ModalFormulario>
+      )}
+
+      {cambioPedido && (
+        <ConfirmarEstadoRequerimiento
+          req={cambioPedido.req}
+          estado={cambioPedido.estado}
+          onCancelar={() => setCambioPedido(null)}
+          onConfirmar={(datos) => {
+            cambiarEstado(cambioPedido.req.id, cambioPedido.estado, datos);
+            setCambioPedido(null);
+          }}
+        />
+      )}
+
       {aEliminar && (
         <>
           <div className="ts-overlay-cerrar" onClick={() => setAEliminar(null)} />
@@ -6958,10 +7194,17 @@ function EstadoRequerimientoBadge({ estado }) {
 // aprobación hecha por error). Las opciones dependen de los permisos:
 // aprobar → Pendiente / Aprobado / No aprobado; compras → Aprobado /
 // En proceso de compra / Comprado.
-function estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra) {
+function estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra, estadoActual) {
   const lista = [];
-  if (puedeAprobar) lista.push("pendiente_aprobacion", "aprobado", "no_aprobado");
-  if (puedeAvanzarCompra) lista.push("aprobado", "en_proceso_compra", "comprado");
+  // Supervisor: decide la aprobación mientras no haya empezado la compra.
+  if (puedeAprobar && ["pendiente_aprobacion", "aprobado", "no_aprobado"].includes(estadoActual))
+    lista.push("pendiente_aprobacion", "aprobado", "no_aprobado");
+  // Planificador: solo sobre requerimientos ya aprobados (nunca aprueba).
+  // Sigue la secuencia: Aprobado → En proceso de compra → Comprado (y desde
+  // Comprado puede volver a En proceso para corregir).
+  if (puedeAvanzarCompra && estadoActual === "aprobado") lista.push("en_proceso_compra");
+  if (puedeAvanzarCompra && ["en_proceso_compra", "comprado"].includes(estadoActual)) lista.push("en_proceso_compra", "comprado");
+  if (lista.length) lista.push(estadoActual);
   return Object.keys(ESTADO_REQ_LABEL).filter((e) => lista.includes(e));
 }
 // El menú se posiciona "fijo" respecto de la ventana (no dentro de la tabla),
@@ -6970,7 +7213,7 @@ function estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra) {
 function EstadoRequerimientoEditable({ req, puedeAprobar, puedeAvanzarCompra, onCambiarEstado }) {
   const [abierto, setAbierto] = useState(false);
   const [posMenu, setPosMenu] = useState(null);
-  const opciones = estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra);
+  const opciones = estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra, req.estado);
   useEffect(() => {
     if (!abierto) return;
     const cerrar = () => setAbierto(false);
@@ -7031,6 +7274,170 @@ function EstadoRequerimientoEditable({ req, puedeAprobar, puedeAvanzarCompra, on
   );
 }
 
+// Secuencia del requerimiento en la fila: Solicitado → Aprobado → En
+// proceso de compra → Comprado, con fecha, usuario y datos de la compra.
+function SeguimientoRequerimiento({ req }) {
+  const pasos = pasosRequerimiento(req);
+  const actual = pasos.filter((p) => p.hecho).length - 1;
+  return (
+    <div className="ts-req-seguimiento" onClick={(e) => e.stopPropagation()}>
+      {pasos.map((p, i) => {
+        const d = p.dato || {};
+        const fecha = fechaHoraReq(p.clave === "comprado" && d.fecha_recepcion ? d.fecha_recepcion : d.fecha);
+        return (
+          <div
+            key={p.clave}
+            className={
+              "ts-req-paso" +
+              (p.hecho ? " ts-req-paso-hecho" : "") +
+              (i === actual ? " ts-req-paso-actual" : "") +
+              (p.rechazo ? " ts-req-paso-rechazo" : "")
+            }
+          >
+            <span className="ts-req-paso-barra" />
+            <div className="ts-req-paso-titulo">
+              <span className="ts-req-paso-icono">
+                {p.hecho ? (
+                  <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+                    {p.rechazo ? <path d="M7 7l10 10M17 7L7 17" /> : <path d="M5 12.5l4.5 4.5L19 7.5" />}
+                  </svg>
+                ) : (
+                  i + 1
+                )}
+              </span>
+              {p.titulo}
+            </div>
+            <div className="ts-req-paso-meta">
+              {p.hecho ? (
+                <>
+                  {fecha || "—"}
+                  {d.usuario && <> · {usuarioDoc(d.usuario)}</>}
+                </>
+              ) : (
+                "Pendiente"
+              )}
+            </div>
+            {p.hecho && p.clave === "en_proceso_compra" && (d.orden_compra || d.fecha_llegada) && (
+              <div className="ts-req-paso-extra">
+                {d.orden_compra && <>OC {d.orden_compra}</>}
+                {d.orden_compra && d.fecha_llegada && " · "}
+                {d.fecha_llegada && <>Llega {fechaHoraReq(d.fecha_llegada)}</>}
+              </div>
+            )}
+            {p.hecho && d.motivo && <div className="ts-req-paso-extra">{d.motivo}</div>}
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+// Cuadro emergente con toda la información del requerimiento y su proceso.
+function DetalleRequerimiento({ req }) {
+  const dato = (etiqueta, valor, clase) => (
+    <div className="ts-detalle-dato">
+      <span>{etiqueta}</span>
+      <div className={clase || ""}>{valor || "—"}</div>
+    </div>
+  );
+  return (
+    <Panel
+      titulo={`Requerimiento ${req.id}`}
+      subtitulo={<EstadoRequerimientoBadge estado={req.estado} />}
+    >
+      <div className="ts-detalle-grid ts-detalle-grid-req">
+        {dato("Equipo", req.equipo, "ts-mono")}
+        {dato("Flota", req.flota)}
+        {dato("Número de parte", req.numero_parte, "ts-mono")}
+        {dato("Cantidad", req.cantidad, "ts-mono")}
+        {dato("Solicitante", usuarioDoc(req.solicitante))}
+        {dato("Fecha de solicitud", formatoFecha(req.fecha_solicitud), "ts-mono")}
+      </div>
+      <div className="ts-detalle-bloque">
+        {dato("Descripción del repuesto o material", req.descripcion, "ts-detalle-texto")}
+      </div>
+      <div className="ts-alm-subtitulo">Proceso</div>
+      <SeguimientoRequerimiento req={req} />
+    </Panel>
+  );
+}
+
+// Confirmación de cada cambio de estado ("¿Está seguro…?"). Para "En
+// proceso de compra" pide el N° de orden de compra y la fecha prevista de
+// llegada; para "Comprado", la fecha de recepción del repuesto.
+function ConfirmarEstadoRequerimiento({ req, estado, onConfirmar, onCancelar }) {
+  const [oc, setOc] = useState("");
+  const [llegada, setLlegada] = useState("");
+  const [recepcion, setRecepcion] = useState(HOY);
+  const [motivo, setMotivo] = useState("");
+  const [falta, setFalta] = useState(false);
+  const textos = {
+    aprobado: `¿Está seguro de APROBAR el requerimiento ${req.id}?`,
+    no_aprobado: `¿Está seguro de NO APROBAR el requerimiento ${req.id}?`,
+    en_proceso_compra: `¿Está seguro de cambiar el requerimiento ${req.id} al estado "EN PROCESO DE COMPRA"?`,
+    comprado: `¿Está seguro de cambiar el requerimiento ${req.id} al estado "COMPRADO"?`,
+    pendiente_aprobacion: `¿Volver el requerimiento ${req.id} a "Pendiente de aprobación"?`,
+  };
+  function confirmar() {
+    if (estado === "en_proceso_compra") {
+      if (!oc.trim() || !llegada) return setFalta(true);
+      return onConfirmar({ orden_compra: oc.trim(), fecha_llegada: llegada });
+    }
+    if (estado === "comprado") {
+      if (!recepcion) return setFalta(true);
+      return onConfirmar({ fecha_recepcion: recepcion });
+    }
+    if (estado === "no_aprobado") return onConfirmar(motivo.trim() ? { motivo: motivo.trim() } : {});
+    onConfirmar({});
+  }
+  return (
+    <div className="ts-confirmar-cierre-fondo" onClick={onCancelar}>
+      <div className="ts-confirmar-cierre" role="alertdialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+        <div className="ts-confirmar-cierre-titulo">{textos[estado] || `¿Cambiar el estado de ${req.id}?`}</div>
+        <div className="ts-confirmar-cierre-texto">
+          Equipo {req.equipo} · {req.numero_parte ? `${req.numero_parte} · ` : ""}
+          {req.descripcion || "Sin descripción"}
+        </div>
+        {estado === "en_proceso_compra" && (
+          <div className="ts-form-grid ts-confirmar-campos">
+            <label className="ts-campo">
+              <span>Número de orden de compra</span>
+              <input type="text" value={oc} onChange={(e) => setOc(e.target.value)} placeholder="Ej. OC-45120" autoFocus />
+            </label>
+            <label className="ts-campo">
+              <span>Fecha prevista de llegada</span>
+              <input type="date" value={llegada} onChange={(e) => setLlegada(e.target.value)} />
+            </label>
+          </div>
+        )}
+        {estado === "comprado" && (
+          <div className="ts-form-grid ts-confirmar-campos">
+            <label className="ts-campo">
+              <span>Fecha de recepción del repuesto</span>
+              <input type="date" value={recepcion} onChange={(e) => setRecepcion(e.target.value)} />
+            </label>
+          </div>
+        )}
+        {estado === "no_aprobado" && (
+          <label className="ts-campo ts-confirmar-campos">
+            <span>Motivo (opcional)</span>
+            <input type="text" value={motivo} onChange={(e) => setMotivo(e.target.value)} />
+          </label>
+        )}
+        {falta && <div className="ts-verificaciones-error">Completa los datos para continuar.</div>}
+        <div className="ts-confirmar-cierre-botones">
+          <button type="button" className="ts-btn-ghost" onClick={onCancelar}>
+            Cancelar
+          </button>
+          <button type="button" className="ts-btn" onClick={confirmar}>
+            Sí, confirmar
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function AccionesRequerimiento({ req, puedeAprobar, puedeAvanzarCompra, onCambiarEstado }) {
   if (puedeAprobar && req.estado === "pendiente_aprobacion") {
     return (
@@ -7076,7 +7483,7 @@ function FormularioRequerimiento({ onGuardar, inicial, personal, solicitantes = 
       descripcion: "",
       cantidad: 1,
       fecha_solicitud: HOY,
-      solicitante: solicitantes.includes(solicitanteActual) ? solicitanteActual : solicitantes[0] || "",
+      solicitante: solicitanteActual || "",
     }
   );
 
@@ -7116,22 +7523,21 @@ function FormularioRequerimiento({ onGuardar, inicial, personal, solicitantes = 
 
           <div className="ts-campo">
             <span>Flota</span>
-            <div className="ts-tiempo-calculado">{form.flota}</div>
-            <span className="ts-campo-ayuda">Según el equipo elegido</span>
+            <div className="ts-dato-fijo ts-dato-acento">{form.flota}</div>
           </div>
 
           <CampoTexto etiqueta="Número de parte" valor={form.numero_parte} onChange={(v) => campo("numero_parte", v)} />
           <CampoTexto etiqueta="Cantidad" tipo="number" valor={form.cantidad} onChange={(v) => campo("cantidad", Number(v))} />
-          <CampoTexto etiqueta="Fecha de solicitud" tipo="date" valor={form.fecha_solicitud} onChange={(v) => campo("fecha_solicitud", v)} />
+          {/* Fecha y solicitante: automáticos, solo se muestran. */}
+          <div className="ts-campo">
+            <span>Fecha de solicitud</span>
+            <div className="ts-dato-fijo ts-dato-acento">{formatoFecha(form.fecha_solicitud)}</div>
+          </div>
 
-          <CampoSelect etiqueta="Solicitante" valor={form.solicitante} onChange={(v) => campo("solicitante", v)}>
-            {listaSolicitantes.length === 0 && <option value="">Sin personal autorizado</option>}
-            {listaSolicitantes.map((nombre) => (
-              <option key={nombre} value={nombre}>
-                {nombre}
-              </option>
-            ))}
-          </CampoSelect>
+          <div className="ts-campo">
+            <span>Solicitante</span>
+            <div className="ts-dato-fijo ts-dato-ok">{usuarioDoc(form.solicitante) || "—"}</div>
+          </div>
         </div>
 
         <label className="ts-campo ts-campo-full">
@@ -10837,6 +11243,9 @@ function Estilos() {
       .ts-tm-info { min-width: 0; line-height: 1.35; }
       .ts-tm-linea { color: var(--text); font-weight: 500; font-size: calc(15px * var(--ts-escala-fuente, 1)); }
       .ts-tm-ot { color: var(--text-dim); font-weight: 500; }
+      .ts-tiempo-invalido { color: var(--red); }
+      .ts-aviso-horas { color: var(--red); font-size: calc(11.5px * var(--ts-escala-fuente, 1)); margin-top: 3px; }
+      .ts-aviso-horas-fuerte { font-weight: 600; }
       /* Inicio: botón imprimir de los cuadros e Indicadores de mantenimiento */
       .ts-btn-imprimir-panel svg { width: 16px; height: 16px; }
       .ts-acciones-panel { display: flex; align-items: center; gap: 6px; margin-left: auto; }
@@ -10931,6 +11340,36 @@ function Estilos() {
       .ts-confirmar-cierre-titulo { font-size: calc(16px * var(--ts-escala-fuente, 1)); font-weight: 600; margin-bottom: 6px; }
       .ts-confirmar-cierre-texto { font-size: calc(13.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); margin-bottom: 18px; line-height: 1.45; }
       .ts-confirmar-cierre-botones { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
+      .ts-confirmar-campos { margin: -4px 0 14px; }
+      /* Datos automáticos del formulario (solo se muestran) */
+      .ts-dato-fijo { border: 1px solid transparent; padding: 7px 9px; border-radius: 3px; font-size: calc(13px * var(--ts-escala-fuente, 1)); font-weight: 600; color: var(--text); min-height: 34px; box-sizing: border-box; }
+      .ts-dato-acento { background: color-mix(in srgb, var(--amber) 32%, var(--panel)); }
+      .ts-dato-ok { background: color-mix(in srgb, var(--green) 32%, var(--panel)); }
+      /* Requerimientos: secuencia de estados en la fila */
+      .ts-tabla tr.ts-req-con-seguimiento td { border-bottom: none; }
+      .ts-tabla tr.ts-req-fila-seguimiento td { padding-top: 0; padding-bottom: 12px; }
+      .ts-tabla tr.ts-req-fila-seguimiento:hover td { background: transparent; }
+      .ts-req-seguimiento { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 12px; padding: 2px 0 0; }
+      .ts-req-paso { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+      .ts-req-paso-barra { height: 4px; border-radius: 999px; background: var(--border); margin-bottom: 5px; }
+      .ts-req-paso-hecho .ts-req-paso-barra { background: var(--amber); opacity: .35; }
+      .ts-req-paso-actual .ts-req-paso-barra { opacity: 1; }
+      .ts-req-paso-rechazo .ts-req-paso-barra { background: var(--red); opacity: 1; }
+      .ts-req-paso-titulo { display: flex; align-items: center; gap: 6px; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); font-weight: 600; color: var(--text-dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .ts-req-paso-hecho .ts-req-paso-titulo { color: var(--text); }
+      .ts-req-paso-icono {
+        width: 16px; height: 16px; border-radius: 50%; flex-shrink: 0; display: inline-flex; align-items: center; justify-content: center;
+        font-size: 9.5px; font-weight: 700; border: 1px solid var(--border); color: var(--text-dim); background: var(--panel);
+      }
+      .ts-req-paso-hecho .ts-req-paso-icono { background: var(--amber); border-color: var(--amber); color: var(--panel); }
+      .ts-req-paso-rechazo .ts-req-paso-icono { background: var(--red); border-color: var(--red); color: #fff; }
+      .ts-req-paso-meta { font-size: calc(11.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); padding-left: 22px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .ts-req-paso-extra { font-size: calc(11.5px * var(--ts-escala-fuente, 1)); color: var(--text); padding-left: 22px; }
+      .ts-am-card .ts-req-seguimiento { margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border); }
+      @media (max-width: 600px) {
+        .ts-req-seguimiento { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 12px; }
+        .ts-req-paso-meta { white-space: normal; }
+      }
       .ts-confirmar-cierre .ts-btn-descartar { color: var(--red); border-color: var(--red); margin-right: auto; }
       @keyframes ts-latido { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
       .ts-edicion-ocupada { display: flex; flex-direction: column; gap: 12px; padding: 6px 4px 4px; font-size: calc(14px * var(--ts-escala-fuente, 1)); color: var(--text); line-height: 1.5; }
@@ -11417,6 +11856,9 @@ function Estilos() {
       .ts-detalle-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px 16px; margin-bottom: 14px; }
       .ts-detalle-dato { display: flex; flex-direction: column; gap: 4px; margin-bottom: 12px; }
       .ts-detalle-grid .ts-detalle-dato { margin-bottom: 0; }
+      .ts-detalle-bloque { margin-top: 14px; }
+      .ts-detalle-grid.ts-detalle-grid-req { grid-template-columns: repeat(6, minmax(0, 1fr)); }
+      @media (max-width: 600px) { .ts-detalle-grid.ts-detalle-grid-req { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
       .ts-detalle-dato > span { font-size: calc(11.5px * var(--ts-escala-fuente, 1)); font-weight: 600; color: var(--text-dim); text-transform: uppercase; letter-spacing: 0.03em; }
       .ts-detalle-dato > div { font-size: calc(13.5px * var(--ts-escala-fuente, 1)); color: var(--text); }
       .ts-detalle-titulo { font-weight: 700; }

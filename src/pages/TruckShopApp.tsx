@@ -314,27 +314,41 @@ const normalizarNombre = (t) =>
     .replace(/[.,]/g, " ")
     .trim();
 function usuarioDoc(nombre) {
-  if (!nombre) return nombre;
+  const p = personaDeNombre(nombre);
+  return p && p.usuario ? p.usuario : nombre;
+}
+// Persona registrada (con usuario) que corresponde a un nombre, o null si es
+// personal de apoyo escrito a mano.
+function personaDeNombre(nombre) {
+  if (!nombre) return null;
   const lista = registroPersonal.lista || [];
   const n = normalizarNombre(nombre);
   // 1) Nombre completo o usuario exactos.
   const exacto = lista.find((x) => normalizarNombre(x.nombre) === n || normalizarNombre(x.usuario) === n);
-  if (exacto) return exacto.usuario || nombre;
+  if (exacto) return exacto.usuario ? exacto : null;
   // 2) Nombre corto de los reportes ("Raul", "Raymundo A."): una sola
   //    persona cuyo nombre tenga esa palabra (y la inicial, si la hay).
   const partes = n.split(/\s+/).filter(Boolean);
-  if (!partes.length || partes.length > 2) return nombre;
+  if (!partes.length || partes.length > 2) return null;
   const [palabra, inicial] = partes;
-  if (palabra.length < 3) return nombre;
+  if (palabra.length < 3) return null;
   const candidatos = lista.filter((x) => {
     const t = normalizarNombre(x.nombre).split(/\s+/);
     const i = t.indexOf(palabra);
     if (i < 0) return false;
     return !inicial || t.some((o, j) => j !== i && o.startsWith(inicial));
   });
-  return candidatos.length === 1 && candidatos[0].usuario ? candidatos[0].usuario : nombre;
+  return candidatos.length === 1 && candidatos[0].usuario ? candidatos[0] : null;
 }
-const usuariosDoc = (lista) => (lista || []).map(usuarioDoc);
+// Lista de personal: primero los usuarios registrados y al final el
+// personal de apoyo (en el orden en que se agregaron).
+const usuariosDoc = (lista) => {
+  const todos = (lista || []).map((n) => ({ n, p: personaDeNombre(n) }));
+  return [
+    ...todos.filter((x) => x.p).map((x) => x.p.usuario),
+    ...todos.filter((x) => !x.p).map((x) => x.n),
+  ];
+};
 
 // Si se indica la flota (la del equipo del trabajo), solo se muestra el
 // personal del subgrupo de esa flota (p. ej. GRUPO 1 – CARGUIO), incluido su
@@ -492,6 +506,7 @@ const ESTADO_REQ_LABEL = {
   no_aprobado: "No aprobado",
   en_proceso_compra: "En proceso de compra",
   comprado: "Comprado",
+  cancelado: "Cancelado",
 };
 
 // Secuencia del requerimiento: cada cambio de estado con fecha y usuario.
@@ -502,14 +517,26 @@ function seguimientoDe(req) {
   return [{ estado: "pendiente_aprobacion", fecha: req.creado_en || req.fecha_solicitud, usuario: req.solicitante, nombre: req.solicitante }];
 }
 const NIVEL_ESTADO_REQ = { pendiente_aprobacion: 0, aprobado: 1, no_aprobado: 1, en_proceso_compra: 2, comprado: 3 };
+// Detalle de compra (antes "orden de compra") del paso "En proceso de compra".
+const detalleCompraReq = (d) => (d && (d.detalle_compra || d.orden_compra)) || "";
+// Último paso antes de la cancelación (para restablecer un cancelado).
+function pasoPrevioCancelacion(req) {
+  if (req.estado !== "cancelado") return null;
+  return seguimientoDe(req).filter((p) => p.estado !== "cancelado").slice(-1)[0] || null;
+}
 // Los 4 pasos (Solicitado → Aprobado → En proceso de compra → Comprado),
 // con la fecha y el usuario del último registro de cada uno.
 function pasosRequerimiento(req) {
   const seg = seguimientoDe(req);
   const ultimo = (estado) => seg.filter((p) => p.estado === estado).slice(-1)[0] || null;
-  const nivel = NIVEL_ESTADO_REQ[req.estado] ?? 0;
+  const cancelado = req.estado === "cancelado";
+  // Cancelado: quedan hechos los pasos del estado anterior a la cancelación
+  // y el paso siguiente se muestra como "Cancelado" (en rojo).
+  const previo = cancelado ? seg.filter((p) => p.estado !== "cancelado").slice(-1)[0] : null;
+  const nivel = cancelado ? Math.max(1, NIVEL_ESTADO_REQ[(previo || {}).estado] ?? 1) : NIVEL_ESTADO_REQ[req.estado] ?? 0;
   const noAprobado = req.estado === "no_aprobado";
   const paso = (clave, titulo, n) => {
+    if (cancelado && n === nivel + 1) return { clave: "cancelado", titulo: "Cancelado", hecho: true, dato: ultimo("cancelado"), rechazo: true };
     const hecho = nivel >= n && !(noAprobado && n > 1);
     return { clave, titulo, hecho, dato: hecho ? ultimo(clave) : null };
   };
@@ -539,9 +566,11 @@ function fechasRequerimiento(req) {
     aprobado_por: usuarioDoc((d("aprobado") || {}).usuario || ""),
     no_aprobado: fechaHoraReq((d("no_aprobado") || {}).fecha),
     inicio_compra: fechaHoraReq((compra || {}).fecha),
-    orden_compra: (compra || {}).orden_compra || "",
-    llegada_prevista: fechaHoraReq((compra || {}).fecha_llegada),
-    recepcion: fechaHoraReq((recibido || {}).fecha_recepcion || (recibido || {}).fecha),
+    detalle_compra: detalleCompraReq(compra),
+    comprado: fechaHoraReq((recibido || {}).fecha),
+    comprado_por: usuarioDoc((recibido || {}).usuario || ""),
+    cancelado: fechaHoraReq((d("cancelado") || {}).fecha),
+    motivo: (d("cancelado") || d("no_aprobado") || {}).motivo || "",
   };
 }
 
@@ -686,7 +715,7 @@ function avisarErrorWord(e) {
 function exportarWord(filas, columnas, nombreArchivo, titulo) {
   const PILL_CLASE = {
     Disponible: "ok", Aprobado: "ok", Comprado: "ok",
-    "No disponible": "no", "No aprobado": "no", Derrame: "no",
+    "No disponible": "no", "No aprobado": "no", Cancelado: "no", Derrame: "no",
     "Pendiente de aprobación": "pend",
     "En proceso de compra": "info", Cambio: "info",
     Día: "dia", Noche: "noche",
@@ -1205,7 +1234,7 @@ function pillDoc(valor) {
   const v = String(valor || "");
   const mapa = {
     Disponible: "ok", Aprobado: "ok", Comprado: "ok",
-    "No disponible": "no", "No aprobado": "no", Derrame: "no",
+    "No disponible": "no", "No aprobado": "no", Cancelado: "no", Derrame: "no",
     "Pendiente de aprobación": "pend",
     "En proceso de compra": "info", Cambio: "info",
     Día: "dia", Noche: "noche",
@@ -1798,16 +1827,20 @@ function htmlSeguimientoReq(req) {
   return `<div class="seg">${pasos
     .map((p, i) => {
       const d = p.dato || {};
-      const fecha = fechaHoraReq(p.clave === "comprado" && d.fecha_recepcion ? d.fecha_recepcion : d.fecha);
+      const fecha = fechaHoraReq(d.fecha);
       const meta = p.hecho ? `${escaparHTML(fecha || "—")}${d.usuario ? ` · ${escaparHTML(usuarioDoc(d.usuario))}` : ""}` : "Pendiente";
       const extra =
-        p.hecho && p.clave === "en_proceso_compra" && (d.orden_compra || d.fecha_llegada)
-          ? `<div class="extra">${d.orden_compra ? `OC ${escaparHTML(d.orden_compra)}` : ""}${d.orden_compra && d.fecha_llegada ? " · " : ""}${d.fecha_llegada ? `Llega ${escaparHTML(fechaHoraReq(d.fecha_llegada))}` : ""}</div>`
+        p.hecho && p.clave === "en_proceso_compra" && detalleCompraReq(d)
+          ? `<div class="extra">${escaparHTML(detalleCompraReq(d))}</div>`
           : p.hecho && d.motivo
           ? `<div class="extra">${escaparHTML(d.motivo)}</div>`
           : "";
+      const restab =
+        p.hecho && d.restablecido_en
+          ? `<div class="meta">Restablecido ${escaparHTML(fechaHoraReq(d.restablecido_en))}${d.restablecido_por ? ` · ${escaparHTML(usuarioDoc(d.restablecido_por))}` : ""}</div>`
+          : "";
       const clases = ["seg-paso", p.hecho ? "hecho" : "", i === actual ? "actual" : "", p.rechazo ? "rechazo" : ""].join(" ");
-      return `<div class="${clases}"><div class="barra"></div><div class="tit"><span class="ico">${p.hecho ? (p.rechazo ? "✕" : "✓") : i + 1}</span>${escaparHTML(p.titulo)}</div><div class="meta">${meta}</div>${extra}</div>`;
+      return `<div class="${clases}"><div class="barra"></div><div class="tit"><span class="ico">${p.hecho ? (p.rechazo ? "✕" : "✓") : i + 1}</span>${escaparHTML(p.titulo)}</div><div class="meta">${meta}</div>${extra}${restab}</div>`;
     })
     .join("")}</div>`;
 }
@@ -1958,9 +1991,11 @@ const COLUMNAS_EXPORT_REQUERIMIENTOS = [
   { clave: "estado", titulo: "Estado" },
   { clave: "fecha_aprobacion", titulo: "Aprobación" },
   { clave: "fecha_inicio_compra", titulo: "Inicio de compra" },
-  { clave: "orden_compra", titulo: "Orden de compra" },
-  { clave: "fecha_llegada", titulo: "Llegada prevista" },
-  { clave: "fecha_recepcion", titulo: "Recepción" },
+  { clave: "detalle_compra", titulo: "Detalle de compra" },
+  { clave: "fecha_comprado", titulo: "Comprado" },
+  { clave: "comprado_por", titulo: "Comprado por" },
+  { clave: "fecha_cancelado", titulo: "Cancelado" },
+  { clave: "motivo", titulo: "Motivo" },
 ];
 
 function filasExportRequerimientos(requerimientos) {
@@ -1973,9 +2008,11 @@ function filasExportRequerimientos(requerimientos) {
       return {
         fecha_aprobacion: f.aprobacion,
         fecha_inicio_compra: f.inicio_compra,
-        orden_compra: f.orden_compra,
-        fecha_llegada: f.llegada_prevista,
-        fecha_recepcion: f.recepcion,
+        detalle_compra: f.detalle_compra,
+        fecha_comprado: f.comprado,
+        comprado_por: f.comprado_por,
+        fecha_cancelado: f.cancelado,
+        motivo: f.motivo,
       };
     })(),
   }));
@@ -2667,11 +2704,17 @@ export default function TruckShopApp() {
   }
 
   // Cada cambio de estado queda en la secuencia del requerimiento (fecha,
-  // usuario y datos: orden de compra, llegada prevista, recepción).
+  // usuario y datos: detalle de compra, motivo de rechazo o cancelación).
   function cambiarEstadoRequerimiento(id, nuevoEstado, datos = {}) {
     const actual = requerimientos.find((r) => r.id === id);
     if (!actual) return;
-    const paso = { estado: nuevoEstado, fecha: marcaDeTiempo(), usuario: datosUsuario.usuario, nombre: datosUsuario.nombre, ...datos };
+    const previo = pasoPrevioCancelacion(actual);
+    const paso =
+      previo && previo.estado === nuevoEstado
+        ? // Cancelado por error: vuelve el paso anterior con sus datos y queda
+          // anotado quién lo restableció y cuándo.
+          { ...previo, restablecido_en: marcaDeTiempo(), restablecido_por: datosUsuario.usuario }
+        : { estado: nuevoEstado, fecha: marcaDeTiempo(), usuario: datosUsuario.usuario, nombre: datosUsuario.nombre, ...datos };
     const nuevo = { ...actual, estado: nuevoEstado, seguimiento: [...seguimientoDe(actual), paso], editado_en: marcaDeTiempo() };
     setRequerimientos((prev) => prev.map((r) => (r.id === id ? nuevo : r)));
     // Se envía el registro completo para no perder los datos adicionales.
@@ -3415,7 +3458,7 @@ function FormularioInicioSesion({ nombreApp, logoUrl, titulo, texto }) {
           autoFocus
           autoComplete="username"
           value={usuario}
-          placeholder="Tu usuario (o correo del administrador)"
+          placeholder="Tu usuario"
           onChange={(e) => {
             setUsuario(e.target.value);
             setError("");
@@ -3434,7 +3477,13 @@ function FormularioInicioSesion({ nombreApp, logoUrl, titulo, texto }) {
               setError("");
             }}
           />
-          <button type="button" className="ts-login-ver" onClick={() => setVerContrasena((v) => !v)}>
+          <button
+            type="button"
+            className="ts-login-ver"
+            onClick={() => setVerContrasena((v) => !v)}
+            title={verContrasena ? "Ocultar contraseña" : "Ver contraseña"}
+            aria-label={verContrasena ? "Ocultar contraseña" : "Ver contraseña"}
+          >
             {verContrasena ? "Ocultar" : "Ver"}
           </button>
         </div>
@@ -5448,6 +5497,7 @@ function filtrarPorMarca(lista, filtro) {
 }
 
 function TablaTrabajos({ filas, compacta, onFilaClick, onImprimir, onEliminar, sinFechaTurnoGrupo, onMarcar, filtroMarca, onFiltroMarca }) {
+  const conPersonal = !compacta && sinFechaTurnoGrupo;
   // Quién está editando cada trabajo ahora mismo (se ve sin abrirlo).
   const ediciones = useEdicionesActivas();
   const editando = (t) => {
@@ -5545,6 +5595,8 @@ function TablaTrabajos({ filas, compacta, onFilaClick, onImprimir, onEliminar, s
       </div>
     )}
     <div className={"ts-tabla-wrap" + (!compacta ? " ts-trabajos-tabla" : "")}>
+      {/* Pestaña Trabajos (vista de computadora): columna Personal con los
+          usuarios seleccionados en el registro. */}
       <table
         className={
           "ts-tabla ts-tabla-cards" +
@@ -5561,6 +5613,7 @@ function TablaTrabajos({ filas, compacta, onFilaClick, onImprimir, onEliminar, s
             </th>
             {!compacta && <th>Equipo</th>}
             <th>Trabajo</th>
+            {conPersonal && <th>Personal</th>}
             {!compacta && <th>Ubicación</th>}
             {!sinFechaTurnoGrupo && <th>Fecha</th>}
             {!sinFechaTurnoGrupo && <th>Turno</th>}
@@ -5604,7 +5657,14 @@ function TablaTrabajos({ filas, compacta, onFilaClick, onImprimir, onEliminar, s
                   )}
                 </div>
               </td>
-              {!compacta && <td><div className="ts-clamp-2">{t.ubicacion}</div></td>}
+              {conPersonal && (
+                <td>
+                  <div className="ts-clamp-2 ts-trabajo-personal" title={usuariosDoc(t.participantes).join(", ")}>
+                    {usuariosDoc(t.participantes).join(", ") || <span className="ts-texto-tenue">—</span>}
+                  </div>
+                </td>
+              )}
+              {!compacta && <td><div className="ts-clamp-2" title={t.ubicacion || ""}>{t.ubicacion}</div></td>}
               {!sinFechaTurnoGrupo && <td className="ts-mono">{t.fecha}</td>}
               {!sinFechaTurnoGrupo && (
                 <td>
@@ -7180,7 +7240,7 @@ function EstadoRequerimientoBadge({ estado }) {
   const tono =
     estado === "aprobado" || estado === "comprado"
       ? "ts-badge-ok"
-      : estado === "no_aprobado"
+      : estado === "no_aprobado" || estado === "cancelado"
       ? "ts-badge-alerta"
       : estado === "en_proceso_compra"
       ? "ts-badge-info"
@@ -7194,7 +7254,7 @@ function EstadoRequerimientoBadge({ estado }) {
 // aprobación hecha por error). Las opciones dependen de los permisos:
 // aprobar → Pendiente / Aprobado / No aprobado; compras → Aprobado /
 // En proceso de compra / Comprado.
-function estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra, estadoActual) {
+function estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra, estadoActual, estadoPrevioReq = null) {
   const lista = [];
   // Supervisor: decide la aprobación mientras no haya empezado la compra.
   if (puedeAprobar && ["pendiente_aprobacion", "aprobado", "no_aprobado"].includes(estadoActual))
@@ -7202,8 +7262,12 @@ function estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra, estadoActual) {
   // Planificador: solo sobre requerimientos ya aprobados (nunca aprueba).
   // Sigue la secuencia: Aprobado → En proceso de compra → Comprado (y desde
   // Comprado puede volver a En proceso para corregir).
-  if (puedeAvanzarCompra && estadoActual === "aprobado") lista.push("en_proceso_compra");
-  if (puedeAvanzarCompra && ["en_proceso_compra", "comprado"].includes(estadoActual)) lista.push("en_proceso_compra", "comprado");
+  // Puede cancelar un requerimiento aprobado o en proceso de compra.
+  if (puedeAvanzarCompra && estadoActual === "aprobado") lista.push("en_proceso_compra", "cancelado");
+  if (puedeAvanzarCompra && estadoActual === "en_proceso_compra") lista.push("comprado", "cancelado");
+  if (puedeAvanzarCompra && estadoActual === "comprado") lista.push("en_proceso_compra");
+  // Cancelado por error: puede volver al estado que tenía antes de cancelar.
+  if (puedeAvanzarCompra && estadoActual === "cancelado" && estadoPrevioReq) lista.push(estadoPrevioReq);
   if (lista.length) lista.push(estadoActual);
   return Object.keys(ESTADO_REQ_LABEL).filter((e) => lista.includes(e));
 }
@@ -7213,7 +7277,7 @@ function estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra, estadoActual) {
 function EstadoRequerimientoEditable({ req, puedeAprobar, puedeAvanzarCompra, onCambiarEstado }) {
   const [abierto, setAbierto] = useState(false);
   const [posMenu, setPosMenu] = useState(null);
-  const opciones = estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra, req.estado);
+  const opciones = estadosPermitidosReq(puedeAprobar, puedeAvanzarCompra, req.estado, (pasoPrevioCancelacion(req) || {}).estado);
   useEffect(() => {
     if (!abierto) return;
     const cerrar = () => setAbierto(false);
@@ -7283,7 +7347,7 @@ function SeguimientoRequerimiento({ req }) {
     <div className="ts-req-seguimiento" onClick={(e) => e.stopPropagation()}>
       {pasos.map((p, i) => {
         const d = p.dato || {};
-        const fecha = fechaHoraReq(p.clave === "comprado" && d.fecha_recepcion ? d.fecha_recepcion : d.fecha);
+        const fecha = fechaHoraReq(d.fecha);
         return (
           <div
             key={p.clave}
@@ -7317,14 +7381,16 @@ function SeguimientoRequerimiento({ req }) {
                 "Pendiente"
               )}
             </div>
-            {p.hecho && p.clave === "en_proceso_compra" && (d.orden_compra || d.fecha_llegada) && (
-              <div className="ts-req-paso-extra">
-                {d.orden_compra && <>OC {d.orden_compra}</>}
-                {d.orden_compra && d.fecha_llegada && " · "}
-                {d.fecha_llegada && <>Llega {fechaHoraReq(d.fecha_llegada)}</>}
-              </div>
+            {p.hecho && p.clave === "en_proceso_compra" && detalleCompraReq(d) && (
+              <div className="ts-req-paso-extra">{detalleCompraReq(d)}</div>
             )}
             {p.hecho && d.motivo && <div className="ts-req-paso-extra">{d.motivo}</div>}
+            {p.hecho && d.restablecido_en && (
+              <div className="ts-req-paso-extra ts-texto-dim">
+                Restablecido {fechaHoraReq(d.restablecido_en)}
+                {d.restablecido_por && <> · {usuarioDoc(d.restablecido_por)}</>}
+              </div>
+            )}
           </div>
         );
       })}
@@ -7362,13 +7428,11 @@ function DetalleRequerimiento({ req }) {
   );
 }
 
-// Confirmación de cada cambio de estado ("¿Está seguro…?"). Para "En
-// proceso de compra" pide el N° de orden de compra y la fecha prevista de
-// llegada; para "Comprado", la fecha de recepción del repuesto.
+// Confirmación de cada cambio de estado ("¿Está seguro…?"). "En proceso de
+// compra" pide el detalle de compra; "No aprobado" y "Cancelado", el motivo
+// (obligatorios). "Comprado" registra solo fecha, hora y usuario.
 function ConfirmarEstadoRequerimiento({ req, estado, onConfirmar, onCancelar }) {
-  const [oc, setOc] = useState("");
-  const [llegada, setLlegada] = useState("");
-  const [recepcion, setRecepcion] = useState(HOY);
+  const [detalle, setDetalle] = useState("");
   const [motivo, setMotivo] = useState("");
   const [falta, setFalta] = useState(false);
   const textos = {
@@ -7376,55 +7440,81 @@ function ConfirmarEstadoRequerimiento({ req, estado, onConfirmar, onCancelar }) 
     no_aprobado: `¿Está seguro de NO APROBAR el requerimiento ${req.id}?`,
     en_proceso_compra: `¿Está seguro de cambiar el requerimiento ${req.id} al estado "EN PROCESO DE COMPRA"?`,
     comprado: `¿Está seguro de cambiar el requerimiento ${req.id} al estado "COMPRADO"?`,
+    cancelado: `¿Está seguro de CANCELAR el requerimiento ${req.id}?`,
     pendiente_aprobacion: `¿Volver el requerimiento ${req.id} a "Pendiente de aprobación"?`,
   };
+  const restablecer = req.estado === "cancelado";
+  const pideMotivo = !restablecer && (estado === "no_aprobado" || estado === "cancelado");
+  const titulo = restablecer
+    ? `¿Está seguro de anular la cancelación y volver el requerimiento ${req.id} al estado "${(ESTADO_REQ_LABEL[estado] || estado).toUpperCase()}"?`
+    : textos[estado] || `¿Cambiar el estado de ${req.id}?`;
   function confirmar() {
+    if (restablecer) return onConfirmar({});
     if (estado === "en_proceso_compra") {
-      if (!oc.trim() || !llegada) return setFalta(true);
-      return onConfirmar({ orden_compra: oc.trim(), fecha_llegada: llegada });
+      if (!detalle.trim()) return setFalta(true);
+      return onConfirmar({ detalle_compra: detalle.trim() });
     }
-    if (estado === "comprado") {
-      if (!recepcion) return setFalta(true);
-      return onConfirmar({ fecha_recepcion: recepcion });
+    if (pideMotivo) {
+      if (!motivo.trim()) return setFalta(true);
+      return onConfirmar({ motivo: motivo.trim() });
     }
-    if (estado === "no_aprobado") return onConfirmar(motivo.trim() ? { motivo: motivo.trim() } : {});
     onConfirmar({});
   }
+  const alEnter = (e) => {
+    if (e.key === "Enter") confirmar();
+  };
   return (
     <div className="ts-confirmar-cierre-fondo" onClick={onCancelar}>
       <div className="ts-confirmar-cierre" role="alertdialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
-        <div className="ts-confirmar-cierre-titulo">{textos[estado] || `¿Cambiar el estado de ${req.id}?`}</div>
+        <div className="ts-confirmar-cierre-titulo">{titulo}</div>
         <div className="ts-confirmar-cierre-texto">
           Equipo {req.equipo} · {req.numero_parte ? `${req.numero_parte} · ` : ""}
           {req.descripcion || "Sin descripción"}
         </div>
-        {estado === "en_proceso_compra" && (
-          <div className="ts-form-grid ts-confirmar-campos">
-            <label className="ts-campo">
-              <span>Número de orden de compra</span>
-              <input type="text" value={oc} onChange={(e) => setOc(e.target.value)} placeholder="Ej. OC-45120" autoFocus />
-            </label>
-            <label className="ts-campo">
-              <span>Fecha prevista de llegada</span>
-              <input type="date" value={llegada} onChange={(e) => setLlegada(e.target.value)} />
-            </label>
-          </div>
+        {restablecer && (
+          <div className="ts-confirmar-cierre-texto">Se recuperan los datos que tenía antes de cancelarse y queda registrado quién lo restableció.</div>
         )}
-        {estado === "comprado" && (
-          <div className="ts-form-grid ts-confirmar-campos">
-            <label className="ts-campo">
-              <span>Fecha de recepción del repuesto</span>
-              <input type="date" value={recepcion} onChange={(e) => setRecepcion(e.target.value)} />
-            </label>
-          </div>
-        )}
-        {estado === "no_aprobado" && (
+        {!restablecer && estado === "en_proceso_compra" && (
           <label className="ts-campo ts-confirmar-campos">
-            <span>Motivo (opcional)</span>
-            <input type="text" value={motivo} onChange={(e) => setMotivo(e.target.value)} />
+            <span>Detalle de compra</span>
+            <input
+              type="text"
+              value={detalle}
+              className={falta && !detalle.trim() ? "ts-input-error" : ""}
+              onChange={(e) => {
+                setDetalle(e.target.value);
+                setFalta(false);
+              }}
+              onKeyDown={alEnter}
+              placeholder="Número de orden de compra"
+              autoFocus
+            />
           </label>
         )}
-        {falta && <div className="ts-verificaciones-error">Completa los datos para continuar.</div>}
+        {!restablecer && estado === "comprado" && (
+          <div className="ts-confirmar-cierre-texto">Se registrará la fecha, la hora y tu usuario en el seguimiento.</div>
+        )}
+        {pideMotivo && (
+          <label className="ts-campo ts-confirmar-campos">
+            <span>Motivo</span>
+            <input
+              type="text"
+              value={motivo}
+              className={falta && !motivo.trim() ? "ts-input-error" : ""}
+              onChange={(e) => {
+                setMotivo(e.target.value);
+                setFalta(false);
+              }}
+              onKeyDown={alEnter}
+              autoFocus
+            />
+          </label>
+        )}
+        {falta && (
+          <div className="ts-verificaciones-error">
+            {pideMotivo ? "Escribe el motivo para continuar." : "Escribe el detalle de compra para continuar."}
+          </div>
+        )}
         <div className="ts-confirmar-cierre-botones">
           <button type="button" className="ts-btn-ghost" onClick={onCancelar}>
             Cancelar
@@ -7451,19 +7541,27 @@ function AccionesRequerimiento({ req, puedeAprobar, puedeAvanzarCompra, onCambia
       </div>
     );
   }
-  if (puedeAvanzarCompra && req.estado === "aprobado") {
+  if (puedeAvanzarCompra && (req.estado === "aprobado" || req.estado === "en_proceso_compra")) {
+    const siguiente = req.estado === "aprobado" ? "en_proceso_compra" : "comprado";
     return (
-      <button className="ts-btn-mini" onClick={() => onCambiarEstado(req.id, "en_proceso_compra")}>
-        Marcar en proceso de compra
-      </button>
+      <div className="ts-acciones-fila">
+        <button className="ts-btn-mini" onClick={() => onCambiarEstado(req.id, siguiente)}>
+          {req.estado === "aprobado" ? "Marcar en proceso de compra" : "Marcar comprado"}
+        </button>
+        <button className="ts-btn-mini ts-btn-mini-alerta" onClick={() => onCambiarEstado(req.id, "cancelado")}>
+          Cancelar
+        </button>
+      </div>
     );
   }
-  if (puedeAvanzarCompra && req.estado === "en_proceso_compra") {
-    return (
-      <button className="ts-btn-mini" onClick={() => onCambiarEstado(req.id, "comprado")}>
-        Marcar comprado
-      </button>
-    );
+  if (puedeAvanzarCompra && req.estado === "cancelado") {
+    const previo = pasoPrevioCancelacion(req);
+    if (previo && previo.estado !== "pendiente_aprobacion")
+      return (
+        <button className="ts-btn-mini" title="Anular la cancelación (hecha por error)" onClick={() => onCambiarEstado(req.id, previo.estado)}>
+          Restablecer
+        </button>
+      );
   }
   return <span className="ts-texto-dim">—</span>;
 }
@@ -11111,16 +11209,21 @@ function Estilos() {
          mismos anchos fijos para que sus columnas queden alineadas. */
       /* Ancho mínimo: en pantallas angostas (celular horizontal) la columna
          Trabajo no se aplasta; la tabla se recorre con la barra inferior. */
-      .ts-tabla.ts-tabla-trabajos-amplia { table-layout: fixed; width: 100%; min-width: 1060px; }
-      .ts-tabla-trabajos-amplia th:nth-child(1), .ts-tabla-trabajos-amplia td:nth-child(1) { width: 118px; }
-      .ts-tabla-trabajos-amplia th:nth-child(2), .ts-tabla-trabajos-amplia td:nth-child(2) { width: 88px; }
+      .ts-tabla.ts-tabla-trabajos-amplia { table-layout: fixed; width: 100%; min-width: 980px; }
+      /* 1 OT · 2 Equipo · 3 Trabajo (todo el espacio libre) · 4 Personal ·
+         5 Ubicación · 6 Horario · 7 Estado · 8 Botones */
+      .ts-tabla-trabajos-amplia th:nth-child(1), .ts-tabla-trabajos-amplia td:nth-child(1) { width: 126px; }
+      .ts-tabla-trabajos-amplia th:nth-child(2), .ts-tabla-trabajos-amplia td:nth-child(2) { width: 80px; }
       .ts-tabla-trabajos td .ts-pill-editando, .ts-tabla-trabajos-amplia td .ts-pill-editando { display: block; width: fit-content; margin: 3px 0 0; }
       .ts-tabla-trabajos-amplia th:nth-child(3), .ts-tabla-trabajos-amplia td:nth-child(3) { width: auto; min-width: 0; }
       .ts-tabla-trabajos-amplia th:nth-child(4), .ts-tabla-trabajos-amplia td:nth-child(4) { width: 150px; }
-      .ts-tabla-trabajos-amplia th:nth-child(5), .ts-tabla-trabajos-amplia td:nth-child(5) { width: 128px; }
-      .ts-tabla-trabajos-amplia th:nth-child(6), .ts-tabla-trabajos-amplia td:nth-child(6) { width: 70px; }
-      .ts-tabla-trabajos-amplia th:nth-child(7), .ts-tabla-trabajos-amplia td:nth-child(7) { width: 104px; }
-      .ts-tabla-trabajos-amplia td:nth-child(4) .ts-clamp-2 { overflow: hidden; text-overflow: ellipsis; }
+      .ts-tabla-trabajos-amplia th:nth-child(5), .ts-tabla-trabajos-amplia td:nth-child(5) { width: 104px; }
+      .ts-tabla-trabajos-amplia th:nth-child(6), .ts-tabla-trabajos-amplia td:nth-child(6) { width: 112px; }
+      .ts-tabla-trabajos-amplia th:nth-child(7), .ts-tabla-trabajos-amplia td:nth-child(7) { width: 62px; }
+      .ts-tabla-trabajos-amplia th:nth-child(8), .ts-tabla-trabajos-amplia td:nth-child(8) { width: 100px; }
+      .ts-tabla-trabajos-amplia td:nth-child(5) .ts-clamp-2 { overflow: hidden; text-overflow: ellipsis; }
+      /* Personal: hasta 2 líneas */
+      .ts-tabla.ts-tabla-trabajos-amplia td:nth-child(4) .ts-clamp-2.ts-trabajo-personal { white-space: normal; display: -webkit-box; overflow-wrap: anywhere; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); }
 
       /* Ancho mínimo: en pantallas angostas la tabla se desplaza dentro de su cuadro */
       .ts-tabla-trabajos { min-width: 980px; }
@@ -11634,7 +11737,9 @@ function Estilos() {
       .ts-login-marca, .ts-login .ts-sesion-cerrada-logo { align-self: center; width: 44px; height: 44px; font-size: calc(15px * var(--ts-escala-fuente, 1)); display: flex; align-items: center; justify-content: center; }
       .ts-login input { width: 100%; box-sizing: border-box; }
       .ts-login-clave { position: relative; }
-      .ts-login-clave input { padding-right: 70px; }
+      .ts-login-clave input { padding-right: 72px; }
+      /* Oculta el ojo propio del navegador (Edge/IE) para que no salgan dos */
+      .ts-login-clave input::-ms-reveal, .ts-login-clave input::-ms-clear { display: none; }
       .ts-login-ver {
         position: absolute; right: 6px; top: 50%; transform: translateY(-50%);
         background: transparent; border: none; color: var(--amber);

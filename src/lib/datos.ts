@@ -19,12 +19,13 @@ const COLUMNAS: Record<string, string[]> = {
     "equipo", "flota", "numero_parte", "descripcion", "cantidad", "solicitante", "fecha_solicitud", "estado",
     "creado_en", "editado_en",
   ],
+  engrases: ["equipo", "flota", "fecha", "turno", "resultado", "comentario", "inspector", "creado_en", "editado_en"],
   equipos: ["codigo", "flota", "modelo", "descripcion", "activo"],
   tipos_aceite: ["nombre", "activo"],
   sistemas_equipo: ["nombre", "activo"],
   grupos_trabajo: ["id", "nombre", "alcance"],
 };
-const CON_EXTRA = ["trabajos", "aceites", "requerimientos"];
+const CON_EXTRA = ["trabajos", "aceites", "requerimientos", "engrases"];
 const FECHAS = ["fecha", "fecha_solicitud"];
 const NUMEROS = ["cantidad_litros", "horometro", "cantidad", "grupo"];
 const IGNORAR = ["id", "extra", "creado_por", "registrado"];
@@ -143,7 +144,7 @@ export async function cargarAspectoPublico(): Promise<Fila | null> {
 }
 
 export async function cargarTodo(idUsuario: string) {
-  const [perfiles, grupos, equipos, tipos, sistemas, config, trabajos, aceites, requerimientos] = await Promise.all([
+  const [perfiles, grupos, equipos, tipos, sistemas, config, trabajos, aceites, requerimientos, engrases, frecuencias] = await Promise.all([
     leerTodo("perfiles", "creado_en"),
     leerTodo("grupos_trabajo", "id"),
     leerTodo("equipos", "creado_en"),
@@ -153,6 +154,10 @@ export async function cargarTodo(idUsuario: string) {
     leerTodo("trabajos"),
     leerTodo("aceites"),
     leerTodo("requerimientos"),
+    // Engrase (supabase/7_componentes_engrase_almacen.sql): si aún no se
+    // instaló, la app sigue funcionando sin esa pestaña.
+    leerTodo("engrases").catch(() => []),
+    leerTodo("engrase_frecuencias", "equipo").catch(() => []),
   ]);
   const personal = perfiles.map(perfilDesdeFila);
   const configuracion: Fila = {};
@@ -168,6 +173,9 @@ export async function cargarTodo(idUsuario: string) {
     trabajos: trabajos.map(desdeFila),
     aceites: aceites.map(desdeFila),
     requerimientos: requerimientos.map(desdeFila),
+    engrases: engrases.map(desdeFila),
+    // Frecuencia de inspección de engrase por equipo: { "234": 7, ... }
+    frecuenciasEngrase: Object.fromEntries(frecuencias.map((f) => [f.equipo, f.dias])),
   };
 }
 
@@ -266,4 +274,102 @@ export async function cambiarActivoUsuario(id: string, activo: boolean): Promise
 
 export async function eliminarUsuario(id: string): Promise<void> {
   await revisar(supabase.rpc("admin_eliminar_usuario", { p_id: id }));
+}
+
+// ---------------------------------------------------------------------------
+// Componentes y Almacén (supabase/7_componentes_engrase_almacen.sql)
+// El Administrador sube el Excel desde la app: las filas se envían por
+// partes y al final se activan de una sola vez.
+// ---------------------------------------------------------------------------
+const SIN_INSTALAR = /importaciones|horas_componentes|inventario|buscar_inventario|importar_lote|does not exist|schema cache/i;
+function errorDatos(e: any): Error {
+  const m = String(e?.message || e || "");
+  if (SIN_INSTALAR.test(m)) return new Error("Falta instalar la base de datos de Componentes y Almacén (supabase/7_componentes_engrase_almacen.sql).");
+  return e instanceof Error ? e : new Error(m);
+}
+
+// Última carga de un Excel: { tipo, lote, archivo, filas, usuario, fecha } o null.
+export async function leerImportacion(tipo: string): Promise<Fila | null> {
+  try {
+    return (await revisar(supabase.from("importaciones").select("*").eq("tipo", tipo).maybeSingle())) as Fila | null;
+  } catch (e) {
+    throw errorDatos(e);
+  }
+}
+
+// Horas de componentes de la última carga.
+export async function leerHorasComponentes(lote: string): Promise<Fila[]> {
+  const tam = 1000;
+  let desde = 0;
+  const todo: Fila[] = [];
+  try {
+    for (;;) {
+      const parte = await revisar(
+        supabase.from("horas_componentes").select("*").eq("lote", lote).order("id", { ascending: true }).range(desde, desde + tam - 1)
+      );
+      todo.push(...((parte as Fila[]) || []));
+      if (!parte || (parte as Fila[]).length < tam) break;
+      desde += tam;
+    }
+  } catch (e) {
+    throw errorDatos(e);
+  }
+  return todo;
+}
+
+// Búsqueda en el almacén por número de parte.
+export async function buscarInventario(texto: string): Promise<Fila[]> {
+  try {
+    return ((await revisar(supabase.rpc("buscar_inventario", { p_texto: texto }))) as Fila[]) || [];
+  } catch (e) {
+    throw errorDatos(e);
+  }
+}
+
+function nuevoLote(): string {
+  if (typeof crypto !== "undefined" && crypto.randomUUID) return crypto.randomUUID();
+  return "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, (c) => {
+    const r = (Math.random() * 16) | 0;
+    return (c === "x" ? r : (r & 0x3) | 0x8).toString(16);
+  });
+}
+
+// Sube un Excel ya leído (tipo "componentes" o "inventario").
+export async function importarDatos(
+  tipo: string,
+  filas: Fila[],
+  archivo: string,
+  usuario: string,
+  alAvanzar?: (hechas: number, total: number) => void
+): Promise<number> {
+  const lote = nuevoLote();
+  const tam = 1000;
+  try {
+    for (let i = 0; i < filas.length; i += tam) {
+      await revisar(supabase.rpc("importar_lote", { p_tipo: tipo, p_lote: lote, p_filas: filas.slice(i, i + tam) }));
+      if (alAvanzar) alAvanzar(Math.min(i + tam, filas.length), filas.length);
+    }
+    return (await revisar(
+      supabase.rpc("confirmar_importacion", { p_tipo: tipo, p_lote: lote, p_archivo: archivo, p_usuario: usuario })
+    )) as number;
+  } catch (e) {
+    supabase.rpc("descartar_importacion", { p_tipo: tipo, p_lote: lote }).then(
+      () => {},
+      () => {}
+    );
+    throw errorDatos(e);
+  }
+}
+
+// Frecuencia de inspección de engrase de un equipo (días). Vacío = se quita.
+export async function guardarFrecuenciaEngrase(equipo: string, dias: number | null, usuario: string): Promise<void> {
+  if (!dias) {
+    await revisar(supabase.from("engrase_frecuencias").delete().eq("equipo", equipo));
+    return;
+  }
+  await revisar(
+    supabase
+      .from("engrase_frecuencias")
+      .upsert({ equipo, dias, actualizado_por: usuario, actualizado_en: new Date().toISOString() }, { onConflict: "equipo" })
+  );
 }

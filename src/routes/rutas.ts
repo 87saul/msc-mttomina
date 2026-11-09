@@ -5,6 +5,8 @@ export const RUTAS: Record<string, string> = {
   trabajos: "/trabajos",
   aceites: "/aceites",
   requerimientos: "/requerimientos",
+  componentes: "/componentes",
+  engrase: "/engrase",
   historial: "/historial",
   config: "/configuracion",
 };

@@ -2028,7 +2028,8 @@ function textoOperacionAceite(op) {
 // Permisos por rol, según la Fase 1
 const PERMISOS_INICIAL = {
   Administrador: {
-    nav: ["dashboard", "trabajos", "aceites", "requerimientos", "historial", "config"],
+    nav: ["dashboard", "trabajos", "requerimientos", "componentes", "aceites", "engrase", "historial", "config"],
+    registrarEngrase: true,
     crearTrabajo: true,
     crearAceite: true,
     registrarDerrame: true,
@@ -2037,7 +2038,8 @@ const PERMISOS_INICIAL = {
     avanzarCompra: false,
   },
   Supervisor: {
-    nav: ["dashboard", "trabajos", "aceites", "requerimientos", "historial"],
+    nav: ["dashboard", "trabajos", "requerimientos", "componentes", "aceites", "engrase", "historial"],
+    registrarEngrase: true,
     crearTrabajo: true,
     crearAceite: true,
     registrarDerrame: true,
@@ -2046,7 +2048,8 @@ const PERMISOS_INICIAL = {
     avanzarCompra: false,
   },
   Técnico: {
-    nav: ["dashboard", "trabajos", "aceites", "requerimientos", "historial"],
+    nav: ["dashboard", "trabajos", "requerimientos", "componentes", "aceites", "engrase", "historial"],
+    registrarEngrase: true,
     crearTrabajo: true,
     crearAceite: true,
     registrarDerrame: true,
@@ -2055,7 +2058,8 @@ const PERMISOS_INICIAL = {
     avanzarCompra: false,
   },
   Planificador: {
-    nav: ["dashboard", "aceites", "requerimientos", "historial"],
+    nav: ["dashboard", "requerimientos", "componentes", "aceites", "historial"],
+    registrarEngrase: false,
     crearTrabajo: false,
     crearAceite: false,
     registrarDerrame: true,
@@ -2064,7 +2068,8 @@ const PERMISOS_INICIAL = {
     avanzarCompra: true,
   },
   Lubricador: {
-    nav: ["aceites"],
+    nav: ["aceites", "engrase"],
+    registrarEngrase: true,
     crearTrabajo: false,
     crearAceite: true,
     registrarDerrame: true,
@@ -2081,8 +2086,10 @@ const PERMISOS_INICIAL = {
 const FILAS_PERMISOS = [
   { etiqueta: "Ver Inicio", tipo: "nav", clave: "dashboard" },
   { etiqueta: "Ver Trabajos", tipo: "nav", clave: "trabajos" },
-  { etiqueta: "Ver Aceites", tipo: "nav", clave: "aceites" },
   { etiqueta: "Ver Requerimientos", tipo: "nav", clave: "requerimientos" },
+  { etiqueta: "Ver Componentes", tipo: "nav", clave: "componentes" },
+  { etiqueta: "Ver Aceites", tipo: "nav", clave: "aceites" },
+  { etiqueta: "Ver Engrase", tipo: "nav", clave: "engrase" },
   { etiqueta: "Ver Historial", tipo: "nav", clave: "historial" },
   { etiqueta: "Registrar trabajos", tipo: "bool", clave: "crearTrabajo" },
   { etiqueta: "Registrar adiciones/cambios de aceite", tipo: "bool", clave: "crearAceite" },
@@ -2090,7 +2097,25 @@ const FILAS_PERMISOS = [
   { etiqueta: "Crear requerimientos", tipo: "bool", clave: "crearRequerimiento" },
   { etiqueta: "Aprobar / no aprobar requerimientos", tipo: "bool", clave: "aprobarRequerimiento" },
   { etiqueta: "Avanzar estado de compra", tipo: "bool", clave: "avanzarCompra" },
+  { etiqueta: "Registrar inspecciones de engrase", tipo: "bool", clave: "registrarEngrase" },
 ];
+
+// Pestañas agregadas después: en los permisos ya guardados de cada rol se
+// agregan según los permisos iniciales (una sola vez; luego el
+// Administrador decide en Configuración → Roles y permisos).
+const NAV_NUEVOS = ["componentes", "engrase"];
+function completarPermisosRol(inicial, guardado) {
+  if (!guardado) return inicial;
+  const p = { ...inicial, ...guardado };
+  const revisados = guardado.navRevisados || [];
+  const faltan = NAV_NUEVOS.filter((k) => !revisados.includes(k) && inicial.nav.includes(k) && !(p.nav || []).includes(k));
+  if (faltan.length) {
+    const orden = NAV_ITEMS_INICIAL.map((n) => n.key);
+    p.nav = [...(p.nav || []), ...faltan].sort((a, b) => orden.indexOf(a) - orden.indexOf(b));
+  }
+  p.navRevisados = [...new Set([...revisados, ...NAV_NUEVOS])];
+  return p;
+}
 
 function permisoActivo(permisoRol, fila) {
   return fila.tipo === "nav" ? permisoRol.nav.includes(fila.clave) : !!permisoRol[fila.clave];
@@ -2101,8 +2126,10 @@ const ROLES_CUADRO_PERMISOS = ["Supervisor", "Técnico", "Planificador", "Lubric
 const NAV_ITEMS_INICIAL = [
   { key: "dashboard", label: "Inicio" },
   { key: "trabajos", label: "Trabajos" },
-  { key: "aceites", label: "Aceites" },
   { key: "requerimientos", label: "Requerimientos" },
+  { key: "componentes", label: "Componentes" },
+  { key: "aceites", label: "Aceites" },
+  { key: "engrase", label: "Engrase" },
   { key: "historial", label: "Historial" },
   { key: "config", label: "Configuración" },
 ];
@@ -2115,6 +2142,8 @@ const NOMBRES_MENU_ORIGINALES = {
   trabajos: "Trabajos",
   aceites: "Aceites",
   requerimientos: "Requerimientos",
+  componentes: "Componentes",
+  engrase: "Engrase",
   historial: "Historial",
   config: "Configuración",
 };
@@ -2171,6 +2200,8 @@ export default function TruckShopApp() {
   const [trabajos, setTrabajos] = useState([]);
   const [aceites, setAceites] = useState([]);
   const [requerimientos, setRequerimientos] = useState([]);
+  const [engrases, setEngrases] = useState([]);
+  const [frecuenciasEngrase, setFrecuenciasEngrase] = useState({});
   const [tiposAceite, setTiposAceite] = useState([]);
   const [sistemasEquipo, setSistemasEquipo] = useState([]);
   const [gruposTrabajo, setGruposTrabajo] = useState(GRUPOS_TRABAJO_INICIAL);
@@ -2361,7 +2392,7 @@ export default function TruckShopApp() {
       const reporte = { ...CONFIG_REPORTE_INICIAL, ...(c.reporte || {}) };
       const permisos = {};
       Object.keys(PERMISOS_INICIAL).forEach((r) => {
-        permisos[r] = r === "Administrador" ? PERMISOS_INICIAL[r] : { ...PERMISOS_INICIAL[r], ...((c.permisos || {})[r] || {}) };
+        permisos[r] = r === "Administrador" ? PERMISOS_INICIAL[r] : completarPermisosRol(PERMISOS_INICIAL[r], (c.permisos || {})[r]);
       });
       const titulos = { ...TITULOS_SECCIONES_INICIAL, ...(c.titulos || {}) };
       const flotasCfg = {
@@ -2396,6 +2427,8 @@ export default function TruckShopApp() {
       setTrabajos(d.trabajos);
       setAceites(d.aceites);
       setRequerimientos(d.requerimientos);
+      setEngrases(d.engrases || []);
+      setFrecuenciasEngrase(d.frecuenciasEngrase || {});
       setDatosListos(true);
     } catch (e) {
       setErrorCarga(db.mensajeError(e));
@@ -2413,10 +2446,10 @@ export default function TruckShopApp() {
     if (!datosListos || !sesion) return;
     iniciarPresencia();
     const miId = sesion.user.id;
-    const NOMBRE_TABLA = { trabajos: "un trabajo", aceites: "un registro de aceite", requerimientos: "un requerimiento" };
+    const NOMBRE_TABLA = { trabajos: "un trabajo", aceites: "un registro de aceite", requerimientos: "un requerimiento", engrases: "una inspección de engrase" };
     return escucharCambios(
       (tabla, tipo, fila, id, creadoPor) => {
-        const setter = { trabajos: setTrabajos, aceites: setAceites, requerimientos: setRequerimientos }[tabla];
+        const setter = { trabajos: setTrabajos, aceites: setAceites, requerimientos: setRequerimientos, engrases: setEngrases }[tabla];
         if (!setter) return;
         if (tipo === "DELETE") {
           setter((prev) => prev.filter((r) => r.id !== id));
@@ -2498,6 +2531,7 @@ export default function TruckShopApp() {
     setTrabajos([]);
     setAceites([]);
     setRequerimientos([]);
+    setEngrases([]);
     setPersonal([]);
   }
 
@@ -2721,6 +2755,37 @@ export default function TruckShopApp() {
     db.actualizar("requerimientos", id, nuevo).catch(errorYRecargar);
   }
 
+  // Engrase: inspecciones del sistema de lubricación.
+  async function agregarEngrase(nuevo) {
+    try {
+      const fila = await db.insertar("engrases", { ...nuevo, creado_en: marcaDeTiempo() });
+      setEngrases((prev) => (prev.some((r) => r.id === fila.id) ? prev.map((r) => (r.id === fila.id ? fila : r)) : [...prev, fila]));
+      return true;
+    } catch (e) {
+      avisarError(e);
+      return false;
+    }
+  }
+  // Se envía el registro completo para no perder los datos adicionales.
+  function actualizarEngrase(registro) {
+    const nuevo = { ...registro, editado_en: marcaDeTiempo() };
+    setEngrases((prev) => prev.map((r) => (r.id === registro.id ? nuevo : r)));
+    db.actualizar("engrases", registro.id, nuevo).catch(errorYRecargar);
+  }
+  function eliminarEngrase(id) {
+    setEngrases((prev) => prev.filter((r) => r.id !== id));
+    db.eliminar("engrases", id).catch(errorYRecargar);
+  }
+  function guardarFrecuenciaEngrase(equipo, dias) {
+    setFrecuenciasEngrase((prev) => {
+      const n = { ...prev };
+      if (dias) n[equipo] = dias;
+      else delete n[equipo];
+      return n;
+    });
+    db.guardarFrecuenciaEngrase(equipo, dias || null, datosUsuario.usuario).catch(errorYRecargar);
+  }
+
   // Catálogos (tipos de aceite y sistemas de equipo)
   function accionesCatalogo(tabla, setLista) {
     return {
@@ -2879,6 +2944,19 @@ export default function TruckShopApp() {
 
 
   const navVisible = navItems.filter((item) => permisos.nav.includes(item.key));
+  // Equipos en orden numérico (101, 102… 202… P-039), como en Configuración.
+  // Al agregar o cambiar equipos se actualizan solos todos los selectores.
+  const equiposOrden = useMemo(() => [...equipos].sort((a, b) => compararCodigosEquipo(a.codigo, b.codigo)), [equipos]);
+  // Celular: si las opciones no entran, la barra inferior se desliza y la
+  // opción activa se acomoda a la vista.
+  const refNavInferior = useRef(null);
+  useEffect(() => {
+    const nav = refNavInferior.current;
+    const activo = nav && nav.querySelector('[data-activo="si"]');
+    if (!activo || nav.scrollWidth <= nav.clientWidth) return;
+    const destino = activo.offsetLeft - (nav.clientWidth - activo.offsetWidth) / 2;
+    nav.scrollTo({ left: Math.max(0, destino), behavior: "smooth" });
+  });
 
   // Si el rol cambia y la vista actual ya no está permitida, saltar a una válida
   const vistaActiva = permisos.nav.includes(vista) ? vista : permisos.nav[0];
@@ -2935,10 +3013,10 @@ export default function TruckShopApp() {
   // navegador.
   const [modoLateral, setModoLateral] = useState(() => {
     try {
-      const v = window.localStorage.getItem("ts-modo-lateral");
-      return ["expandido", "contraido", "hover"].includes(v) ? v : "expandido";
+      const v = window.localStorage.getItem("ts-modo-lateral-2");
+      return ["expandido", "contraido", "hover"].includes(v) ? v : "hover";
     } catch (e) {
-      return "expandido";
+      return "hover";
     }
   });
   const [menuLateralAbierto, setMenuLateralAbierto] = useState(false);
@@ -2947,7 +3025,7 @@ export default function TruckShopApp() {
     setModoLateral(v);
     setMenuLateralAbierto(false);
     try {
-      window.localStorage.setItem("ts-modo-lateral", v);
+      window.localStorage.setItem("ts-modo-lateral-2", v);
     } catch (e) {}
   }
   useEffect(() => {
@@ -3214,11 +3292,12 @@ export default function TruckShopApp() {
               trabajosFiltrados={trabajosFiltrados}
               trabajos={trabajos}
               aceitesTodos={aceites}
-              equipos={equipos}
+              equipos={equiposOrden}
               aceites={aceitesFiltrados}
               tiposAceite={tiposAceite.filter((t) => t.activo).map((t) => t.nombre)}
               mostrarFiltros={mostrarFiltros}
               puedeEditarTrabajos={permisos.crearTrabajo && permisos.nav.includes("trabajos")}
+              engrase={permisos.nav.includes("engrase") ? { registros: engrases, frecuencias: frecuenciasEngrase } : null}
               onEditarEquipo={(codigo) => {
                 const registro = ultimoTrabajoDeEquipo(codigo, trabajos);
                 if (!registro) return;
@@ -3251,7 +3330,7 @@ export default function TruckShopApp() {
               filtros={filtros}
               setFiltros={setFiltros}
               personal={personal}
-              equipos={equipos}
+              equipos={equiposOrden}
               mostrarFiltros={mostrarFiltros}
               trabajoAEditar={trabajoAEditar}
               onEdicionExternaAbierta={() => setTrabajoAEditar(null)}
@@ -3271,7 +3350,7 @@ export default function TruckShopApp() {
               tiposAceite={tiposAceite.filter((t) => t.activo).map((t) => t.nombre)}
               sistemasEquipo={sistemasEquipo.filter((s) => s.activo).map((s) => s.nombre)}
               personal={personal}
-              equipos={equipos}
+              equipos={equiposOrden}
               mostrarFiltros={mostrarFiltros}
             />
           )}
@@ -3294,12 +3373,30 @@ export default function TruckShopApp() {
                 .filter((p) => p.activo && permisosPorRol[rolDePersona(p)]?.crearRequerimiento)
                 .map((p) => p.nombre)}
               solicitanteActual={datosUsuario.usuario || datosUsuario.nombre}
-              equipos={equipos}
+              equipos={equiposOrden}
               mostrarFiltros={mostrarFiltros}
+              esAdmin={rol === "Administrador"}
+              usuarioActual={datosUsuario.usuario}
             />          )}
 
           {vistaActiva === "historial" && (
-            <Historial trabajos={trabajos} aceites={aceites} equipos={equipos} />
+            <Historial trabajos={trabajos} aceites={aceites} equipos={equiposOrden} />
+          )}
+
+          {vistaActiva === "componentes" && <Componentes esAdmin={rol === "Administrador"} usuario={datosUsuario.usuario} equipos={equiposOrden} />}
+
+          {vistaActiva === "engrase" && (
+            <Engrase
+              registros={engrases}
+              equipos={equiposOrden}
+              puedeRegistrar={!!permisos.registrarEngrase}
+              onCrear={agregarEngrase}
+              onActualizar={actualizarEngrase}
+              onEliminar={eliminarEngrase}
+              usuario={datosUsuario.usuario}
+              frecuencias={frecuenciasEngrase}
+              onFrecuencia={guardarFrecuenciaEngrase}
+            />
           )}
           </ZonaBusqueda>
 
@@ -3354,7 +3451,7 @@ export default function TruckShopApp() {
               permisosPorRol={permisosPorRol}
               onToggleAccesoModulo={toggleAccesoModulo}
               onToggleAccionPermiso={toggleAccionPermiso}
-              equipos={equipos}
+              equipos={equiposOrden}
               onAgregarEquipo={agregarEquipo}
               onActualizarEquipo={actualizarEquipo}
               onEliminarEquipo={eliminarEquipo}
@@ -3371,10 +3468,11 @@ export default function TruckShopApp() {
         </FiltrosContext.Provider>
       </div>
 
-      <nav className="ts-bottom-nav">
+      <nav className={"ts-bottom-nav" + (navVisible.length > 5 ? " ts-bottom-nav-desliza" : "")} ref={refNavInferior}>
         {navVisible.map((item) => (
           <button
             key={item.key}
+            data-activo={vistaActiva === item.key ? "si" : undefined}
             className={"ts-bottom-nav-item" + (vistaActiva === item.key ? " ts-bottom-nav-item-activo" : "")}
             onClick={() => setVista(item.key)}
           >
@@ -3674,6 +3772,23 @@ const ICONOS_LATERAL = {
     "M8.8 11h6.4", "M8.8 15h6.4",
   ],
   historial: ["M3.6 12a8.4 8.4 0 1 0 2.5-6", "M3.5 3.8v4.4h4.4", "M12 7.6V12l3 2.2"],
+  // Componentes: tres engranajes
+  componentes: [
+    "M6.83 11.76L6.86 10.31L9.14 10.31L9.17 11.76L10.59 12.44L11.74 11.56L13.16 13.34L12.05 14.27L12.40 15.80L13.80 16.16L13.29 18.37L11.87 18.09L10.89 19.31L11.49 20.63L9.44 21.62L8.79 20.33L7.21 20.33L6.56 21.62L4.51 20.63L5.11 19.31L4.13 18.09L2.71 18.37L2.20 16.16L3.60 15.80L3.95 14.27L2.84 13.34L4.26 11.56L5.41 12.44Z",
+    "M9.80 16.00a1.8 1.8 0 1 0 -3.60 0a1.8 1.8 0 1 0 3.60 0Z",
+    "M18.36 9.00L18.68 8.01L20.42 8.55L20.13 9.55L20.98 10.46L21.99 10.25L22.40 12.03L21.39 12.27L21.02 13.46L21.72 14.24L20.38 15.48L19.66 14.72L18.44 15.00L18.12 15.99L16.38 15.45L16.67 14.45L15.82 13.54L14.81 13.75L14.40 11.97L15.41 11.73L15.78 10.54L15.08 9.76L16.42 8.52L17.14 9.28Z",
+    "M19.60 12.00a1.2 1.2 0 1 0 -2.40 0a1.2 1.2 0 1 0 2.40 0Z",
+    "M10.12 2.12L10.30 1.30L11.78 1.60L11.63 2.42L12.41 3.11L13.21 2.86L13.69 4.29L12.90 4.58L12.69 5.60L13.31 6.16L12.31 7.29L11.67 6.75L10.68 7.08L10.50 7.90L9.02 7.60L9.17 6.78L8.39 6.09L7.59 6.34L7.11 4.91L7.90 4.62L8.11 3.60L7.49 3.04L8.49 1.91L9.13 2.45Z",
+    "M11.30 4.60a0.9 0.9 0 1 0 -1.80 0a0.9 0.9 0 1 0 1.80 0Z",
+  ],
+  // Engrase: pistola de grasa
+  engrase: [
+    "M4.5 9.2h10.3a1.6 1.6 0 0 1 1.6 1.6v2.4a1.6 1.6 0 0 1-1.6 1.6H4.5Z",
+    "M3 9.7v4.6",
+    "M16.4 12h3.4l1.7-1.7",
+    "M9 14.8 7.4 20",
+    "M11.4 9.2 9 4.6h2.8",
+  ],
   config: [
     "M12 15.2a3.2 3.2 0 1 0 0-6.4 3.2 3.2 0 0 0 0 6.4Z",
     "M19.2 14.6a1.4 1.4 0 0 0 .3 1.6l.1.1a1.8 1.8 0 1 1-2.5 2.5l-.1-.1a1.4 1.4 0 0 0-1.6-.3 1.4 1.4 0 0 0-.9 1.3v.2a1.8 1.8 0 0 1-3.6 0v-.1a1.4 1.4 0 0 0-.9-1.3 1.4 1.4 0 0 0-1.6.3l-.1.1a1.8 1.8 0 1 1-2.5-2.5l.1-.1a1.4 1.4 0 0 0 .3-1.6 1.4 1.4 0 0 0-1.3-.9h-.2a1.8 1.8 0 0 1 0-3.6h.1a1.4 1.4 0 0 0 1.3-.9 1.4 1.4 0 0 0-.3-1.6l-.1-.1a1.8 1.8 0 1 1 2.5-2.5l.1.1a1.4 1.4 0 0 0 1.6.3h.1a1.4 1.4 0 0 0 .8-1.3v-.2a1.8 1.8 0 0 1 3.6 0v.1a1.4 1.4 0 0 0 .9 1.3 1.4 1.4 0 0 0 1.6-.3l.1-.1a1.8 1.8 0 1 1 2.5 2.5l-.1.1a1.4 1.4 0 0 0-.3 1.6v.1a1.4 1.4 0 0 0 1.3.8h.2a1.8 1.8 0 0 1 0 3.6h-.1a1.4 1.4 0 0 0-1.3.9Z",
@@ -3684,7 +3799,7 @@ function IconoLateral({ clave }) {
   const trazados = ICONOS_LATERAL[clave];
   if (!trazados) return null;
   return (
-    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+    <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={clave === "componentes" ? 1.25 : 1.6} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       {trazados.map((d, i) => (
         <path key={i} d={d} />
       ))}
@@ -3712,7 +3827,7 @@ function IconoNav({ clave }) {
   );
 }
 
-function Dashboard({ indicadores, filtros, setFiltros, trabajosFiltrados, trabajos = [], aceitesTodos = [], equipos, aceites, tiposAceite, mostrarFiltros, puedeEditarTrabajos, onEditarEquipo }) {
+function Dashboard({ indicadores, filtros, setFiltros, trabajosFiltrados, trabajos = [], aceitesTodos = [], equipos, aceites, tiposAceite, mostrarFiltros, puedeEditarTrabajos, onEditarEquipo, engrase = null }) {
   return (
     <div className="ts-stack">
       <Panel
@@ -3778,6 +3893,8 @@ function Dashboard({ indicadores, filtros, setFiltros, trabajosFiltrados, trabaj
       </Panel>
 
       <ResumenMensualAceites aceites={aceitesTodos} tiposCatalogo={tiposAceite} />
+
+      {engrase && <ResumenEngrase registros={engrase.registros} equipos={equipos} frecuencias={engrase.frecuencias} />}
 
       <TopAdicionesMotor aceites={aceitesTodos} />
 
@@ -6839,10 +6956,13 @@ function Requerimientos({
   solicitanteActual,
   equipos,
   mostrarFiltros,
+  esAdmin = false,
+  usuarioActual = "",
 }) {
   const [mostrarForm, setMostrarForm] = useState(false);
   const [editando, setEditando] = useState(null);
   const [aEliminar, setAEliminar] = useState(null);
+  const [almacenAbierto, setAlmacenAbierto] = useState(false);
   // Cambio de estado pendiente de confirmar: { req, estado }
   const [cambioPedido, setCambioPedido] = useState(null);
   const onCambiarEstado = (id, estado) => {
@@ -7042,6 +7162,11 @@ function Requerimientos({
             </>
           )}
         </div>
+        {/* Almacén: buscar repuestos por número de parte */}
+        <button className="ts-btn ts-btn-almacen" title="Almacén — buscar por número de parte" onClick={() => setAlmacenAbierto(true)}>
+          <span className="ts-btn-texto">Almacén</span>
+          <span className="ts-fab-icono"><IconoCaja /></span>
+        </button>
         {puedeCrear && (
           <button
             className="ts-btn ts-btn-crear"
@@ -7053,6 +7178,12 @@ function Requerimientos({
           </button>
         )}
       </div>
+
+      {almacenAbierto && (
+        <ModalFormulario onCerrar={() => setAlmacenAbierto(false)}>
+          <BuscadorAlmacen esAdmin={esAdmin} usuario={usuarioActual} />
+        </ModalFormulario>
+      )}
 
       {mostrarForm && (
         <ModalFormulario onCerrar={cerrar} bloqueo={editando ? { tabla: "requerimientos", id: editando.id } : null} onRecargado={setEditando}>
@@ -7654,6 +7785,1291 @@ function FormularioRequerimiento({ onGuardar, inicial, personal, solicitantes = 
 }
 
 // ---------------------------------------------------------------------------
+// Carga de Excel (solo Administrador): Componentes y Almacén
+// ---------------------------------------------------------------------------
+const numeroMiles = (n) =>
+  n === null || n === undefined || n === "" || isNaN(Number(n)) ? "" : Number(n).toLocaleString("es-ES", { maximumFractionDigits: 2, useGrouping: true });
+
+function textoFechaHoraImp(iso) {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d)) return "";
+  const p = (x) => String(x).padStart(2, "0");
+  return `${p(d.getDate())}/${p(d.getMonth() + 1)}/${d.getFullYear()} ${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// "Actualizado el 29/10/2026 14:05 por admin · archivo.xlsx"
+function MetaImportacion({ imp, conUsuario = true }) {
+  if (!imp) return null;
+  return (
+    <span className="ts-imp-meta" title={imp.archivo || ""}>
+      Actualizado el {textoFechaHoraImp(imp.fecha)}
+      {conUsuario && imp.usuario ? ` por ${usuarioDoc(imp.usuario)}` : ""}
+    </span>
+  );
+}
+
+function IconoExcel() {
+  return (
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M14 3.5H7a1.5 1.5 0 0 0-1.5 1.5v14A1.5 1.5 0 0 0 7 20.5h10a1.5 1.5 0 0 0 1.5-1.5V8Z" />
+      <path d="M14 3.5V8h4.5" />
+      <path d="M9.5 12.5l4 5" />
+      <path d="M13.5 12.5l-4 5" />
+    </svg>
+  );
+}
+
+// Botón "Actualizar con Excel": lee el archivo en el navegador, muestra un
+// resumen para confirmar y lo sube por partes (tipo: componentes/inventario).
+function ImportarExcel({ tipo, usuario, onImportado, texto = "Actualizar con Excel" }) {
+  const refArchivo = useRef(null);
+  const [leyendo, setLeyendo] = useState(false);
+  const [vista, setVista] = useState(null); // { archivo, filas, resumen }
+  const [avance, setAvance] = useState(null);
+  const [error, setError] = useState("");
+  const [listo, setListo] = useState("");
+
+  async function alElegir(e) {
+    const archivo = e.target.files && e.target.files[0];
+    e.target.value = "";
+    if (!archivo) return;
+    setError("");
+    setListo("");
+    setLeyendo(true);
+    try {
+      const ex = await import("../lib/excel");
+      const libro = await ex.leerExcel(archivo);
+      if (tipo === "componentes") {
+        const r = ex.interpretarComponentes(libro);
+        const equipos = r.modelos.reduce((s, m) => s + m.equipos, 0);
+        setVista({
+          archivo: archivo.name,
+          filas: r.filas,
+          titulo: "Actualizar horas de componentes",
+          lineas: [`${r.modelos.length} modelos · ${equipos} equipos`, `Modelos: ${r.modelos.map((m) => m.modelo).join(", ")}`],
+          aviso: "Reemplaza todas las horas de componentes actuales.",
+        });
+      } else {
+        const r = ex.interpretarInventario(libro);
+        setVista({
+          archivo: archivo.name,
+          filas: r.filas,
+          titulo: "Actualizar inventario de almacén",
+          lineas: [`${numeroMiles(r.filas.length)} ítems (hoja "${r.hoja}")`],
+          aviso: "Reemplaza todo el inventario actual.",
+          faltan: r.faltan,
+        });
+      }
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setLeyendo(false);
+    }
+  }
+
+  async function subir() {
+    const v = vista;
+    setAvance({ hechas: 0, total: v.filas.length });
+    try {
+      await db.importarDatos(tipo, v.filas, v.archivo, usuario, (hechas, total) => setAvance({ hechas, total }));
+      setVista(null);
+      setListo(tipo === "componentes" ? "Horas de componentes actualizadas." : "Inventario actualizado.");
+      if (onImportado) onImportado();
+    } catch (err) {
+      setError(err.message || String(err));
+    } finally {
+      setAvance(null);
+    }
+  }
+
+  return (
+    <>
+      <button type="button" className="ts-btn-ghost ts-btn-excel" onClick={() => refArchivo.current && refArchivo.current.click()} disabled={leyendo}>
+        <IconoExcel />
+        {leyendo ? "Leyendo…" : texto}
+      </button>
+      <input ref={refArchivo} type="file" accept=".xlsx,.xlsm,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" hidden onChange={alElegir} />
+      {(vista || error || listo) && (
+        <div className="ts-confirmar-cierre-fondo" onClick={() => !avance && (setVista(null), setError(""), setListo(""))}>
+          <div className="ts-confirmar-cierre ts-imp-dialogo" role="alertdialog" aria-modal="true" onClick={(e) => e.stopPropagation()}>
+            {error ? (
+              <>
+                <div className="ts-confirmar-cierre-titulo">No se pudo cargar el Excel</div>
+                <div className="ts-confirmar-cierre-texto">{error}</div>
+                <div className="ts-confirmar-cierre-botones">
+                  <button type="button" className="ts-btn" onClick={() => (setError(""), setVista(null))}>
+                    Entendido
+                  </button>
+                </div>
+              </>
+            ) : listo ? (
+              <>
+                <div className="ts-confirmar-cierre-titulo">✓ {listo}</div>
+                <div className="ts-confirmar-cierre-botones">
+                  <button type="button" className="ts-btn" onClick={() => setListo("")}>
+                    Aceptar
+                  </button>
+                </div>
+              </>
+            ) : (
+              <>
+                <div className="ts-confirmar-cierre-titulo">{vista.titulo}</div>
+                <div className="ts-imp-archivo">
+                  <IconoExcel />
+                  <span>{vista.archivo}</span>
+                </div>
+                {vista.lineas.map((l, i) => (
+                  <div key={i} className="ts-confirmar-cierre-texto">
+                    {l}
+                  </div>
+                ))}
+                {vista.faltan && vista.faltan.length > 0 && (
+                  <div className="ts-imp-aviso">No se encontraron estas columnas (quedarán vacías): {vista.faltan.join(", ")}.</div>
+                )}
+                <div className="ts-confirmar-cierre-texto ts-texto-dim">{vista.aviso}</div>
+                {avance && (
+                  <div className="ts-imp-progreso">
+                    <div style={{ width: `${Math.round((avance.hechas / Math.max(1, avance.total)) * 100)}%` }} />
+                  </div>
+                )}
+                <div className="ts-confirmar-cierre-botones">
+                  <button type="button" className="ts-btn-ghost" disabled={!!avance} onClick={() => setVista(null)}>
+                    Cancelar
+                  </button>
+                  <button type="button" className="ts-btn" disabled={!!avance} onClick={subir}>
+                    {avance ? `Subiendo… ${Math.round((avance.hechas / Math.max(1, avance.total)) * 100)}%` : "Subir y reemplazar"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Vista: Componentes (horas de cada componente por equipo)
+// El Administrador sube el Excel cada semana: una hoja por modelo, equipos en
+// la fila 1 y componentes en la columna A. Celda vacía = nunca se cambió.
+// ---------------------------------------------------------------------------
+// Vida útil de referencia de un componente: verde hasta 60 %, amarillo desde
+// 60 % y rojo desde 90 % de vida.
+const VIDA_COMPONENTE_H = 27000;
+function nivelVida(h) {
+  if (h === null || h === undefined) return "";
+  const r = h / VIDA_COMPONENTE_H;
+  return r >= 0.9 ? "rojo" : r >= 0.6 ? "amarillo" : "verde";
+}
+
+function agruparComponentes(filas) {
+  const modelos = [];
+  const porModelo = {};
+  filas.forEach((f) => {
+    let m = porModelo[f.modelo];
+    if (!m) {
+      m = porModelo[f.modelo] = { modelo: f.modelo, equipos: [], componentes: [], horas: {} };
+      modelos.push(m);
+    }
+    if (!m.equipos.includes(f.equipo)) m.equipos.push(f.equipo);
+    if (!m.componentes.includes(f.componente)) m.componentes.push(f.componente);
+    const h = f.horas === "" || f.horas === null || f.horas === undefined ? null : Number(f.horas);
+    m.horas[f.equipo + "|" + f.componente] = h;
+  });
+  modelos.forEach((m) => {
+    // Máximo de cada componente entre los equipos del modelo (para el color).
+    m.maxComp = {};
+    m.componentes.forEach((c) => {
+      m.maxComp[c] = Math.max(0, ...m.equipos.map((e) => m.horas[e + "|" + c] || 0));
+    });
+  });
+  return modelos;
+}
+
+function Componentes({ esAdmin, usuario, equipos }) {
+  const [imp, setImp] = useState(null);
+  const [filas, setFilas] = useState([]);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState("");
+  // Por defecto: modelo 789C, equipo 210 (si existen en el Excel).
+  const [modeloSel, setModeloSel] = useState("789C");
+  const [equipoSel, setEquipoSel] = useState("210");
+  const [compSel, setCompSel] = useState(""); // componente resaltado
+
+  async function cargar() {
+    setCargando(true);
+    setError("");
+    try {
+      const i = await db.leerImportacion("componentes");
+      setImp(i);
+      setFilas(i ? await db.leerHorasComponentes(i.lote) : []);
+    } catch (e) {
+      setError(e.message || String(e));
+    } finally {
+      setCargando(false);
+    }
+  }
+  useEffect(() => {
+    cargar();
+  }, []);
+
+  const modelos = useMemo(() => agruparComponentes(filas), [filas]);
+  const modelo = modelos.find((m) => m.modelo === modeloSel) || modelos[0];
+  const equipoActivo = modelo && (modelo.equipos.includes(equipoSel) ? equipoSel : modelo.equipos[0]);
+  const datosEquipo = (codigo) => equipos.find((e) => String(e.codigo) === String(codigo));
+
+  const verEquipo = (codigo, componente = "") => {
+    setEquipoSel(codigo);
+    setCompSel(componente);
+  };
+
+  const cabecera = (
+    <div className="ts-comp-acciones">
+      <MetaImportacion imp={imp} />
+      {esAdmin && <ImportarExcel tipo="componentes" usuario={usuario} onImportado={cargar} texto="Actualizar horas (Excel)" />}
+
+    </div>
+  );
+
+  return (
+    <div className="ts-stack">
+      {/* Filtros (ícono de filtro de la barra superior, igual que Trabajos) */}
+      <PopoverFiltros activos={!!modelo} resumen={modelo ? [modelo.modelo, `Equipo ${equipoActivo}`] : []}>
+        {modelo && (
+          <div className="ts-filtros ts-filtros-dos">
+            <label className="ts-filtro">
+              <span>Modelo</span>
+              <select value={modelo.modelo} onChange={(e) => (setModeloSel(e.target.value), setCompSel(""))}>
+                {modelos.map((m) => (
+                  <option key={m.modelo} value={m.modelo}>
+                    {m.modelo} ({m.equipos.length} {m.equipos.length === 1 ? "equipo" : "equipos"})
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="ts-filtro">
+              <span>Equipo</span>
+              <select value={equipoActivo} onChange={(e) => verEquipo(e.target.value)}>
+                {modelo.equipos.map((e) => (
+                  <option key={e} value={e}>
+                    {e}
+                  </option>
+                ))}
+              </select>
+            </label>
+          </div>
+        )}
+      </PopoverFiltros>
+      <Panel titulo="Horas de componentes" acciones={cabecera}>
+        {cargando ? (
+          <div className="ts-vacio">Cargando…</div>
+        ) : error ? (
+          <div className="ts-vacio">{error}</div>
+        ) : !modelos.length ? (
+          <div className="ts-vacio">
+            Aún no se cargaron las horas de componentes.
+            {esAdmin ? " Usa “Actualizar horas (Excel)” para subir el archivo." : " El administrador las cargará desde un Excel."}
+          </div>
+        ) : (
+          <>
+            <div className="ts-comp-layout">
+              <div className="ts-comp-tabla-wrap">
+                <table className="ts-comp-tabla">
+                  <thead>
+                    <tr>
+                      <th className="ts-comp-col-nombre">Componente</th>
+                      {modelo.equipos.map((e) => (
+                        <th key={e} className={e === equipoActivo ? "ts-comp-sel" : ""}>
+                          <button type="button" className="ts-comp-equipo-btn" title={`Ver equipo ${e}`} onClick={() => verEquipo(e)}>
+                            {e}
+                          </button>
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {modelo.componentes.map((c) => (
+                      <tr key={c}>
+                        <th className="ts-comp-col-nombre">{c}</th>
+                        {modelo.equipos.map((e) => {
+                          const h = modelo.horas[e + "|" + c];
+                          const sel = (e === equipoActivo ? " ts-comp-sel" : "") + (e === equipoActivo && c === compSel ? " ts-comp-celda-sel" : "");
+                          if (h === null || h === undefined)
+                            return (
+                              <td key={e} className={"ts-comp-vacio" + sel} title={`${c} · equipo ${e}: nunca se cambió`} onClick={() => verEquipo(e, c)}>
+                                —
+                              </td>
+                            );
+                          return (
+                            <td key={e} className={"ts-vida-" + nivelVida(h) + sel} title={`${c} · equipo ${e}: ${numeroMiles(h)} h`} onClick={() => verEquipo(e, c)}>
+                              {numeroMiles(h)}
+                            </td>
+                          );
+                        })}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <DetalleEquipoComponentes
+                modelo={modelo}
+                equipo={equipoActivo}
+                datos={datosEquipo(equipoActivo)}
+                seleccion={compSel}
+                onSeleccion={setCompSel}
+              />
+            </div>
+          </>
+        )}
+      </Panel>
+    </div>
+  );
+}
+
+// Gráfica del equipo elegido: misma altura de filas que la tabla para que
+// queden alineadas. Al tocar una fila se muestra el detalle en un cuadro.
+function DetalleEquipoComponentes({ modelo, equipo, datos, seleccion, onSeleccion }) {
+  const [cuadro, setCuadro] = useState(null); // { c, h, top }
+  useEffect(() => setCuadro(null), [equipo, modelo.modelo]);
+  const lista = modelo.componentes
+    .map((c) => ({ c, h: modelo.horas[equipo + "|" + c] }))
+    .sort((a, b) => (b.h ?? -1) - (a.h ?? -1));
+  function tocar(ev, c, h) {
+    onSeleccion(c);
+    const fila = ev.currentTarget;
+    const caja = fila.closest(".ts-comp-grafica");
+    const top = fila.getBoundingClientRect().top - caja.getBoundingClientRect().top;
+    setCuadro(cuadro && cuadro.c === c ? null : { c, h, top });
+  }
+  return (
+    <div className="ts-comp-grafica">
+      <table className="ts-comp-tabla ts-comp-tabla-grafica">
+        <thead>
+          <tr>
+            <th className="ts-comp-g-nombre">Componente</th>
+            <th className="ts-comp-g-equipo">
+              <b>Equipo {equipo}</b>
+              <span>{modelo.modelo}</span>
+            </th>
+            <th className="ts-comp-g-horas">Horas</th>
+          </tr>
+        </thead>
+        <tbody>
+          {lista.map(({ c, h }) => {
+            const vacio = h === null || h === undefined;
+            const pct = vacio ? 0 : Math.round((h / VIDA_COMPONENTE_H) * 100);
+            return (
+              <tr key={c} className={c === seleccion ? "ts-comp-g-sel" : ""} onClick={(ev) => tocar(ev, c, h)}>
+                <th className="ts-comp-g-nombre">{c}</th>
+                <td className="ts-comp-g-barra">
+                  <span className="ts-comp-barra-fondo">
+                    {!vacio && <span className={"ts-comp-barra-relleno ts-vida-barra-" + nivelVida(h)} style={{ width: `${Math.max(2, Math.min(100, pct))}%` }} />}
+                  </span>
+                </td>
+                <td className={"ts-comp-g-horas" + (vacio ? " ts-texto-dim" : "")}>{vacio ? "Sin cambio" : `${numeroMiles(h)} h`}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+      {cuadro && (
+        <div className="ts-comp-cuadro" style={{ top: cuadro.top + 36 }} onClick={() => setCuadro(null)}>
+          <b>
+            Equipo {equipo} – {cuadro.c}
+          </b>
+          <span>{cuadro.h === null || cuadro.h === undefined ? "Nunca se cambió" : `${numeroMiles(cuadro.h)} h`}</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Vista: Engrase (inspecciones del sistema de lubricación)
+// Equipos por flota y por tipo. Primero los que nunca se inspeccionaron y
+// luego los de inspección más antigua. Una falla queda "por reparar" hasta
+// que alguien la marca como reparada.
+// ---------------------------------------------------------------------------
+
+function diasDesde(fecha) {
+  if (!fecha) return null;
+  const [a, m, d] = fecha.split("-").map(Number);
+  const [ha, hm, hd] = fechaActualLocal().split("-").map(Number);
+  return Math.round((Date.UTC(ha, hm - 1, hd) - Date.UTC(a, m - 1, d)) / 86400000);
+}
+const ordenEngrase = (a, b) => String(b.fecha).localeCompare(String(a.fecha)) || String(b.creado_en || "").localeCompare(String(a.creado_en || ""));
+const fallaPendiente = (r) => r.resultado === "falla" && !(r.reparacion && r.reparacion.estado === "reparado");
+
+function EstadoEngrase({ ultima, pendientes }) {
+  if (pendientes > 0) return <span className="ts-badge ts-badge-alerta">Falla por reparar{pendientes > 1 ? ` (${pendientes})` : ""}</span>;
+  if (!ultima) return <span className="ts-texto-dim">—</span>;
+  return <span className="ts-badge ts-badge-ok">Sin observaciones</span>;
+}
+
+// Color según la frecuencia del equipo: verde dentro del plazo, ámbar el
+// día que vence y rojo cuando ya pasó. Sin frecuencia: gris.
+function DiasEngrase({ dias, frecuencia }) {
+  if (dias === null) return <span className="ts-eng-dias ts-eng-dias-nunca">Sin inspección</span>;
+  const clase = !frecuencia ? "neutro" : dias < frecuencia ? "ok" : dias === frecuencia ? "aviso" : "alerta";
+  const titulo = frecuencia ? (dias > frecuencia ? `Vencida hace ${dias - frecuencia} día(s)` : dias === frecuencia ? "Vence hoy" : `Vence en ${frecuencia - dias} día(s)`) : "Sin frecuencia definida";
+  return (
+    <span className={"ts-eng-dias ts-eng-dias-" + clase} title={titulo}>
+      {dias <= 0 ? "Hoy" : dias === 1 ? "Hace 1 día" : `Hace ${dias} días`}
+    </span>
+  );
+}
+
+// Frecuencia de inspección (días) de un equipo, editable desde la tabla.
+function FrecuenciaEngrase({ equipo, dias, puedeEditar, onGuardar }) {
+  const [abierto, setAbierto] = useState(false);
+  const [valor, setValor] = useState("");
+  const [falta, setFalta] = useState(false);
+  const texto = dias ? `${dias} ${dias === 1 ? "día" : "días"}` : null;
+  if (!puedeEditar) return texto ? <span>{texto}</span> : <span className="ts-texto-dim">—</span>;
+  function guardar() {
+    const n = valor.trim() === "" ? null : Math.round(Number(valor));
+    if (n !== null && (!isFinite(n) || n < 1 || n > 365)) return setFalta(true);
+    onGuardar(equipo, n);
+    setAbierto(false);
+  }
+  return (
+    <>
+      <button
+        type="button"
+        className={"ts-eng-frec" + (texto ? "" : " vacia")}
+        title="Cambiar frecuencia de inspección"
+        onClick={(ev) => {
+          ev.stopPropagation();
+          setValor(dias ? String(dias) : "");
+          setFalta(false);
+          setAbierto(true);
+        }}
+      >
+        {texto || "Definir"}
+      </button>
+      {abierto && (
+        <div className="ts-confirmar-cierre-fondo" onClick={(ev) => (ev.stopPropagation(), setAbierto(false))}>
+          <div className="ts-confirmar-cierre" role="alertdialog" aria-modal="true" onClick={(ev) => ev.stopPropagation()}>
+            <div className="ts-confirmar-cierre-titulo">Frecuencia de inspección — equipo {equipo}</div>
+            <div className="ts-confirmar-cierre-texto">Cada cuántos días se debe inspeccionar el sistema de lubricación de este equipo.</div>
+            <label className="ts-campo ts-confirmar-campos">
+              <span>Frecuencia (días)</span>
+              <input
+                type="number"
+                min="1"
+                max="365"
+                inputMode="numeric"
+                value={valor}
+                className={falta ? "ts-input-error" : ""}
+                onChange={(ev) => (setValor(ev.target.value), setFalta(false))}
+                onKeyDown={(ev) => ev.key === "Enter" && guardar()}
+                autoFocus
+              />
+            </label>
+            {falta && <div className="ts-verificaciones-error">Escribe un número de días entre 1 y 365 (o déjalo vacío para quitarla).</div>}
+            <div className="ts-confirmar-cierre-botones">
+              <button type="button" className="ts-btn-ghost" onClick={() => setAbierto(false)}>
+                Cancelar
+              </button>
+              <button type="button" className="ts-btn" onClick={guardar}>
+                Guardar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+// Situación de engrase de cada equipo activo: última inspección, días
+// transcurridos y fallas por reparar (se usa en Engrase y en Inicio).
+function filasEngrase(registros, equipos) {
+  const porEquipo = {};
+  registros.forEach((r) => (porEquipo[r.equipo] = porEquipo[r.equipo] || []).push(r));
+  return equipos
+    .filter((e) => e.activo)
+    .map((e) => {
+      const lista = (porEquipo[e.codigo] || []).slice().sort(ordenEngrase);
+      const ultima = lista[0] || null;
+      return { e, lista, ultima, dias: ultima ? diasDesde(ultima.fecha) : null, pendientes: lista.filter(fallaPendiente).length };
+    });
+}
+function cuentaEngrase(filas) {
+  return {
+    todos: filas.length,
+    sin: filas.filter((x) => !x.ultima).length,
+    falla: filas.filter((x) => x.pendientes > 0).length,
+    ok: filas.filter((x) => x.ultima && x.pendientes === 0).length,
+  };
+}
+
+// Inicio: "Engrase de equipos". Inspecciones registradas en la fecha y turno
+// elegidos (por defecto el turno actual), separadas por flota.
+function ResumenEngrase({ registros, equipos, frecuencias = {} }) {
+  const [filtro, setFiltro] = useState(() => ({
+    fecha: turnoOperativoActual().fecha,
+    turno: turnoOperativoActual().turno,
+    equipo: "todos",
+    flota: "todos",
+  }));
+  const delTurno = registros.filter(
+    (r) => (!filtro.fecha || r.fecha === filtro.fecha) && (filtro.turno === "todos" || r.turno === filtro.turno)
+  );
+  const datosEquipo = (codigo) => equipos.find((e) => e.codigo === codigo) || {};
+  const flotaDe = (r) => r.flota || datosEquipo(r.equipo).flota || "Sin flota";
+  const flotas = listaFlotas().filter((f) => filtro.flota === "todos" || f === filtro.flota);
+  return (
+    <Panel
+      titulo="Engrase de equipos"
+      acciones={
+        <FiltroPanel
+          activo={hayFiltrosGenerales(filtro)}
+          resumen={[fechaCorta(filtro.fecha), TEXTO_TURNO[filtro.turno], filtro.flota !== "todos" && `Flota ${filtro.flota}`].filter(Boolean).join(" · ") || "Sin filtros"}
+        >
+          <FiltrosBar filtros={filtro} setFiltros={setFiltro} mostrarEquipo={false} />
+        </FiltroPanel>
+      }
+    >
+      <div className="ts-eng-inicio">
+        {flotas.map((flota) => {
+          const lista = delTurno
+            .filter((r) => flotaDe(r) === flota)
+            .sort((a, b) => String(a.equipo).localeCompare(String(b.equipo), "es", { numeric: true }));
+          const fallas = lista.filter((r) => r.resultado === "falla").length;
+          return (
+            <div key={flota} className="ts-eng-inicio-flota">
+              <h4 className="ts-grafico-subtitulo">
+                Flota {flota}{" "}
+                <span className="ts-texto-dim">
+                  · {lista.length} {lista.length === 1 ? "inspección" : "inspecciones"}
+                  {fallas ? ` · ${fallas} ${fallas === 1 ? "falla" : "fallas"}` : ""}
+                </span>
+              </h4>
+              {lista.length ? (
+                <div className="ts-tabla-wrap">
+                  <table className="ts-tabla ts-eng-inicio-tabla">
+                    <thead>
+                      <tr>
+                        <th>Equipo</th>
+                        <th>Tipo</th>
+                        <th>Estado</th>
+                        <th>Frecuencia</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {lista.map((r) => (
+                        <tr
+                          key={r.id}
+                          title={[
+                            `Equipo ${r.equipo}${datosEquipo(r.equipo).modelo ? ` · ${datosEquipo(r.equipo).modelo}` : ""}`,
+                            `Fecha: ${formatoFecha(r.fecha)}${r.turno ? ` · Turno ${r.turno === "noche" ? "Noche" : "Día"}` : ""}`,
+                            `Estado: ${r.resultado === "falla" ? (r.reparacion && r.reparacion.estado === "reparado" ? "Falla reparada" : "Falla por reparar") : "Sin observaciones"}`,
+                            `Comentario: ${r.comentario || "—"}`,
+                            `Personal: ${usuarioDoc(r.inspector) || "—"}`,
+                            `Frecuencia: ${frecuencias[r.equipo] ? `${frecuencias[r.equipo]} días` : "sin definir"}`,
+                          ].join("\n")}
+                        >
+                          <td className="ts-mono ts-eng-equipo">{r.equipo}</td>
+                          <td>{datosEquipo(r.equipo).descripcion || "—"}</td>
+                          <td>
+                            {r.resultado === "falla" ? (
+                              <span className="ts-badge ts-badge-alerta">{r.reparacion && r.reparacion.estado === "reparado" ? "Falla reparada" : "Falla por reparar"}</span>
+                            ) : (
+                              <span className="ts-badge ts-badge-ok">Sin observaciones</span>
+                            )}
+                          </td>
+                          <td>{frecuencias[r.equipo] ? `${frecuencias[r.equipo]} días` : <span className="ts-texto-dim">—</span>}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              ) : (
+                <div className="ts-vacio">Sin engrases registrados en este turno.</div>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Panel>
+  );
+}
+
+const COLUMNAS_EXPORT_ENGRASE = [
+  { clave: "equipo", titulo: "Equipo" },
+  { clave: "flota", titulo: "Flota" },
+  { clave: "tipo", titulo: "Tipo" },
+  { clave: "modelo", titulo: "Modelo" },
+  { clave: "ultima", titulo: "Última inspección" },
+  { clave: "turno", titulo: "Turno" },
+  { clave: "tiempo", titulo: "Tiempo" },
+  { clave: "estado", titulo: "Estado" },
+  { clave: "comentario", titulo: "Comentario" },
+  { clave: "frecuencia", titulo: "Frecuencia" },
+  { clave: "personal", titulo: "Personal" },
+];
+
+function Engrase({ registros, equipos, puedeRegistrar, onCrear, onActualizar, onEliminar, usuario, frecuencias = {}, onFrecuencia }) {
+  const [menuExportAbierto, setMenuExportAbierto] = useState(false);
+  // Mismo filtro que Trabajos: Fecha, Turno, Flota, Equipo y Estado. Por
+  // defecto la fecha y el turno actuales.
+  const [filtros, setFiltros] = useState(() => ({
+    fecha: turnoOperativoActual().fecha,
+    turno: turnoOperativoActual().turno,
+    equipo: "todos",
+    flota: "todos",
+  }));
+  const [estado, setEstado] = useState("todos");
+  const [registrar, setRegistrar] = useState(null); // { equipo } | {}
+  const [detalle, setDetalle] = useState(null); // código de equipo
+
+  // Con fecha/turno elegidos, cada equipo muestra su inspección de ese
+  // turno (reg). Sin filtro de fecha/turno, la última inspección.
+  const enTurno = !!filtros.fecha || filtros.turno !== "todos";
+  const filasEquipo = useMemo(
+    () =>
+      filasEngrase(registros, equipos).map((x) => ({
+        ...x,
+        reg: enTurno
+          ? x.lista.find((r) => (!filtros.fecha || r.fecha === filtros.fecha) && (filtros.turno === "todos" || r.turno === filtros.turno)) || null
+          : x.ultima,
+      })),
+    [registros, equipos, filtros.fecha, filtros.turno]
+  );
+  const base = filasEquipo.filter(
+    (x) => (filtros.flota === "todos" || x.e.flota === filtros.flota) && (filtros.equipo === "todos" || x.e.codigo === filtros.equipo)
+  );
+  const cuenta = {
+    todos: base.length,
+    sin: base.filter((x) => !x.reg).length,
+    falla: base.filter((x) => x.pendientes > 0).length,
+    ok: base.filter((x) => x.reg && x.reg.resultado !== "falla").length,
+  };
+  const pasa = (x) =>
+    base.includes(x) &&
+    (estado === "todos" || (estado === "sin" && !x.reg) || (estado === "falla" && x.pendientes > 0) || (estado === "ok" && x.reg && x.reg.resultado !== "falla"));
+  // Primero los no inspeccionados (en el turno); luego la inspección más antigua.
+  const orden = (a, b) =>
+    (a.reg ? 1 : 0) - (b.reg ? 1 : 0) ||
+    String(a.ultima ? a.ultima.fecha : "").localeCompare(String(b.ultima ? b.ultima.fecha : "")) ||
+    String(a.e.codigo).localeCompare(String(b.e.codigo), "es", { numeric: true });
+  const textoEstado = (x) => {
+    if (x.reg) {
+      if (x.reg.resultado === "falla") return x.reg.reparacion && x.reg.reparacion.estado === "reparado" ? "Falla reparada" : "Falla por reparar";
+      return "Sin observaciones";
+    }
+    return enTurno ? "Pendiente" : "";
+  };
+  const ESTADO_TEXTO = { sin: "Sin inspección", falla: "Fallas por reparar", ok: "Sin observaciones" };
+
+  const flotasConEquipos = listaFlotas().filter((f) => base.some((x) => x.e.flota === f));
+
+  // Exporta lo que se ve (con los filtros aplicados), en el mismo orden.
+  function exportar(formato) {
+    setMenuExportAbierto(false);
+    const filas = [];
+    flotasConEquipos.forEach((flota) => {
+      const deFlota = filasEquipo.filter((x) => x.e.flota === flota && pasa(x));
+      const tipos = [...new Set(deFlota.map((x) => x.e.descripcion || "Sin tipo"))].sort((a, b) => a.localeCompare(b, "es"));
+      tipos.forEach((tipo) =>
+        deFlota
+          .filter((x) => (x.e.descripcion || "Sin tipo") === tipo)
+          .sort(orden)
+          .forEach((x) =>
+            filas.push({
+              equipo: x.e.codigo,
+              flota: x.e.flota,
+              tipo: x.e.descripcion || "",
+              modelo: x.e.modelo || "",
+              ultima: x.ultima ? formatoFecha(x.ultima.fecha) : "Sin inspección",
+              turno: x.ultima && x.ultima.turno ? (x.ultima.turno === "noche" ? "Noche" : "Día") : "",
+              tiempo: x.dias === null ? "" : x.dias <= 0 ? "Hoy" : `${x.dias} días`,
+              estado: textoEstado(x),
+              comentario: x.reg ? x.reg.comentario || "" : "",
+              frecuencia: frecuencias[x.e.codigo] ? `${frecuencias[x.e.codigo]} días` : "",
+              personal: x.reg ? usuarioDoc(x.reg.inspector) || "" : "",
+            })
+          )
+      );
+    });
+    if (formato === "excel") exportarExcel(filas, COLUMNAS_EXPORT_ENGRASE, "engrase_de_equipos");
+    if (formato === "word") exportarWord(filas, COLUMNAS_EXPORT_ENGRASE, "engrase_de_equipos", "Engrase de equipos");
+    if (formato === "pdf") exportarPDF(filas, COLUMNAS_EXPORT_ENGRASE, "Engrase de equipos");
+  }
+  const equipoDetalle = detalle ? filasEquipo.find((x) => x.e.codigo === detalle) : null;
+
+  return (
+    <div className="ts-stack">
+      {/* Filtros (ícono de filtro de la barra superior, igual que Trabajos) */}
+      <PopoverFiltros
+        activos={hayFiltrosGenerales(filtros) || estado !== "todos"}
+        resumen={[
+          fechaCorta(filtros.fecha),
+          TEXTO_TURNO[filtros.turno],
+          filtros.flota !== "todos" && `Flota ${filtros.flota}`,
+          filtros.equipo !== "todos" && `Equipo ${filtros.equipo}`,
+          estado !== "todos" && ESTADO_TEXTO[estado],
+        ]}
+      >
+        <FiltrosBar
+          filtros={filtros}
+          setFiltros={setFiltros}
+          mostrarEquipo={false}
+          extraActivo={estado !== "todos"}
+          onLimpiarExtra={() => setEstado("todos")}
+          contenidoEquipo={
+            <>
+              <label className="ts-filtro">
+                <span>Equipo</span>
+                <select value={filtros.equipo} onChange={(e) => setFiltros((p) => ({ ...p, equipo: e.target.value }))}>
+                  <option value="todos">Todos</option>
+                  {equipos
+                    .filter((e) => e.activo && (filtros.flota === "todos" || e.flota === filtros.flota))
+                    .map((e) => (
+                      <option key={e.codigo} value={e.codigo}>
+                        {e.codigo}
+                      </option>
+                    ))}
+                </select>
+              </label>
+              <label className="ts-filtro">
+                <span>Estado</span>
+                <select value={estado} onChange={(e) => setEstado(e.target.value)}>
+                  <option value="todos">Todos ({cuenta.todos})</option>
+                  <option value="sin">Sin inspección ({cuenta.sin})</option>
+                  <option value="falla">Fallas por reparar ({cuenta.falla})</option>
+                  <option value="ok">Sin observaciones ({cuenta.ok})</option>
+                </select>
+              </label>
+            </>
+          }
+        />
+      </PopoverFiltros>
+
+      {flotasConEquipos
+        .map((flota) => {
+          const deFlota = filasEquipo.filter((x) => x.e.flota === flota && pasa(x));
+          if (!deFlota.length) return null;
+          const tipos = [...new Set(deFlota.map((x) => x.e.descripcion || "Sin tipo"))].sort((a, b) =>
+            a === "Sin tipo" ? 1 : b === "Sin tipo" ? -1 : a.localeCompare(b, "es")
+          );
+          return (
+            <Panel key={flota} titulo={`Flota ${flota}`} subtitulo={`${deFlota.length} equipos`}>
+              {tipos.map((tipo) => {
+                const filas = deFlota.filter((x) => (x.e.descripcion || "Sin tipo") === tipo).sort(orden);
+                return (
+                  <div key={tipo} className="ts-eng-grupo">
+                    <div className="ts-eng-grupo-titulo">
+                      {tipo}
+                      <span>{filas.length}</span>
+                    </div>
+                    <div className="ts-tabla-wrap">
+                      <table className="ts-tabla ts-eng-tabla">
+                        <thead>
+                          <tr>
+                            <th>Equipo</th>
+                            <th>Modelo</th>
+                            <th>Última inspección</th>
+                            <th>Tiempo</th>
+                            <th>Estado</th>
+                            <th>Comentario</th>
+                            <th>Frecuencia</th>
+                            <th>Personal</th>
+                            <th />
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {filas.map((x) => (
+                            <tr key={x.e.codigo} className="ts-fila-click" onClick={() => setDetalle(x.e.codigo)}>
+                              <td className="ts-mono ts-eng-equipo" data-label="Equipo">{x.e.codigo}</td>
+                              <td data-label="Modelo">{x.e.modelo || "—"}</td>
+                              <td className="ts-mono" data-label="Última">{x.ultima ? formatoFecha(x.ultima.fecha) : "—"}</td>
+                              <td data-label="Tiempo"><DiasEngrase dias={x.dias} frecuencia={frecuencias[x.e.codigo]} /></td>
+                              <td data-label="Estado">
+                                {x.reg ? (
+                                  <span className={"ts-badge " + (x.reg.resultado === "falla" && textoEstado(x) === "Falla por reparar" ? "ts-badge-alerta" : "ts-badge-ok")}>{textoEstado(x)}</span>
+                                ) : enTurno ? (
+                                  <span className="ts-badge ts-badge-neutro-eng" title="Sin inspección en el turno elegido">Pendiente</span>
+                                ) : (
+                                  <span className="ts-texto-dim">—</span>
+                                )}
+                              </td>
+                              <td data-label="Comentario">
+                                <div className="ts-clamp-2">{x.reg && x.reg.comentario ? x.reg.comentario : <span className="ts-texto-dim">—</span>}</div>
+                              </td>
+                              <td data-label="Frecuencia" onClick={(ev) => puedeRegistrar && ev.stopPropagation()}>
+                                <FrecuenciaEngrase equipo={x.e.codigo} dias={frecuencias[x.e.codigo]} puedeEditar={puedeRegistrar} onGuardar={onFrecuencia} />
+                              </td>
+                              <td data-label="Personal">{x.reg ? usuarioDoc(x.reg.inspector) || "—" : "—"}</td>
+                              <td className="ts-eng-accion">
+                                {puedeRegistrar && (
+                                  <button
+                                    type="button"
+                                    className="ts-btn-mini"
+                                    onClick={(ev) => {
+                                      ev.stopPropagation();
+                                      setRegistrar({ equipo: x.e.codigo });
+                                    }}
+                                  >
+                                    Registrar
+                                  </button>
+                                )}
+                              </td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+                );
+              })}
+            </Panel>
+          );
+        })}
+      {!filasEquipo.some(pasa) && <div className="ts-vacio">No hay equipos con este filtro.</div>}
+
+      <div className="ts-accion-row ts-accion-row-split">
+        <div className="ts-export-dropdown">
+          <button className="ts-btn ts-btn-exportar" title="Exportar" onClick={() => setMenuExportAbierto((v) => !v)}>
+            <span className="ts-btn-texto">Exportar ▾</span>
+            <span className="ts-fab-icono"><IconoFabExportar /></span>
+          </button>
+          {menuExportAbierto && (
+            <>
+              <div className="ts-overlay-cerrar" onClick={() => setMenuExportAbierto(false)} />
+              <div className="ts-export-menu">
+                <button onClick={() => exportar("pdf")}>Formato PDF</button>
+                <button onClick={() => exportar("word")}>Formato Word</button>
+                <button onClick={() => exportar("excel")}>Formato Excel</button>
+              </div>
+            </>
+          )}
+        </div>
+        {puedeRegistrar && (
+          <button className="ts-btn ts-btn-crear" title="Registrar inspección" onClick={() => setRegistrar({})}>
+            <span className="ts-btn-texto">Registrar inspección</span>
+            <span className="ts-fab-icono"><IconoFabMas /></span>
+          </button>
+        )}
+      </div>
+
+      {registrar && (
+        <ModalFormulario onCerrar={() => setRegistrar(null)}>
+          <FormularioEngrase
+            equipos={equipos}
+            equipoInicial={registrar.equipo}
+            usuario={usuario}
+            onGuardar={async (datos) => {
+              if (await onCrear(datos)) setRegistrar(null);
+            }}
+          />
+        </ModalFormulario>
+      )}
+
+      {equipoDetalle && !registrar && (
+        <ModalFormulario onCerrar={() => setDetalle(null)}>
+          <HistorialEngrase
+            fila={equipoDetalle}
+            frecuencia={frecuencias[equipoDetalle.e.codigo]}
+            puedeRegistrar={puedeRegistrar}
+            usuario={usuario}
+            onActualizar={onActualizar}
+            onEliminar={onEliminar}
+          />
+        </ModalFormulario>
+      )}
+    </div>
+  );
+}
+
+function FormularioEngrase({ equipos, equipoInicial, usuario, onGuardar }) {
+  const activos = equipos.filter((e) => e.activo);
+  const ahora = turnoOperativoActual();
+  const [form, setForm] = useState({
+    equipo: equipoInicial || (activos[0] && activos[0].codigo) || "",
+    fecha: ahora.fecha,
+    turno: ahora.turno,
+    resultado: "ok",
+    comentario: "",
+  });
+  const [falta, setFalta] = useState("");
+  const [guardando, setGuardando] = useState(false);
+  const eq = activos.find((e) => e.codigo === form.equipo);
+  const campo = (k, v) => {
+    setForm((p) => ({ ...p, [k]: v }));
+    setFalta("");
+  };
+  async function enviar() {
+    if (!form.equipo) return setFalta("Elige el equipo.");
+    if (!form.fecha) return setFalta("Indica la fecha de ingreso.");
+    if (form.fecha > fechaActualLocal()) return setFalta("La fecha no puede ser futura.");
+    if (form.resultado === "falla" && !form.comentario.trim()) return setFalta("Describe la falla encontrada para reportarla a reparación.");
+    setGuardando(true);
+    await onGuardar({
+      equipo: form.equipo,
+      flota: eq ? eq.flota : "",
+      fecha: form.fecha,
+      turno: form.turno,
+      resultado: form.resultado,
+      comentario: form.comentario.trim(),
+      inspector: usuario,
+      reparacion: form.resultado === "falla" ? { estado: "pendiente" } : null,
+    });
+    setGuardando(false);
+  }
+  useConfirmarCierre(form, enviar);
+
+  return (
+    <Panel titulo="Registrar inspección de engrase">
+      <div className="ts-form">
+        <div className="ts-form-grid">
+          <CampoSelect etiqueta="Equipo" valor={form.equipo} onChange={(v) => campo("equipo", v)}>
+            {activos.map((e) => (
+              <option key={e.codigo} value={e.codigo}>
+                {e.codigo} · {e.descripcion || e.flota}
+              </option>
+            ))}
+          </CampoSelect>
+          <div className="ts-campo">
+            <span>Flota</span>
+            <div className="ts-dato-fijo ts-dato-acento">{eq ? eq.flota : "—"}</div>
+          </div>
+          <label className="ts-campo">
+            <span>Fecha de ingreso</span>
+            <input type="date" value={form.fecha} max={fechaActualLocal()} onChange={(e) => campo("fecha", e.target.value)} />
+          </label>
+          <CampoSelect etiqueta="Turno" className="ts-select-acento" valor={form.turno} onChange={(v) => campo("turno", v)}>
+            <option value="dia">Día</option>
+            <option value="noche">Noche</option>
+          </CampoSelect>
+          <div className="ts-campo">
+            <span>Personal</span>
+            <div className="ts-dato-fijo ts-dato-ok">{usuario || "—"}</div>
+          </div>
+          {/* Como "Estado final del equipo" en Trabajos: verde / rojo */}
+          <CampoSelect
+            etiqueta="Sistema de lubricación"
+            className={"ts-eng-select-sistema " + (form.resultado === "falla" ? "ts-select-estado-alerta" : "ts-select-estado-ok")}
+            valor={form.resultado}
+            onChange={(v) => campo("resultado", v)}
+          >
+            <option value="ok">Sin observaciones</option>
+            <option value="falla">Reportar falla</option>
+          </CampoSelect>
+        </div>
+        <label className="ts-campo ts-campo-full">
+          <span>{form.resultado === "falla" ? "Falla encontrada (obligatorio)" : "Comentario"}</span>
+          <AreaTexto
+            rows={3}
+            value={form.comentario}
+            className={falta && form.resultado === "falla" && !form.comentario.trim() ? "ts-input-error" : ""}
+            placeholder={form.resultado === "falla" ? "Ej. Bomba no presuriza, línea rota en pasador de dirección…" : "Opcional"}
+            onChange={(e) => campo("comentario", e.target.value)}
+          />
+        </label>
+        {falta && <div className="ts-verificaciones-error">{falta}</div>}
+        <div className="ts-form-acciones">
+          <button type="button" className="ts-btn" onClick={enviar} disabled={guardando}>
+            {guardando ? "Guardando…" : "Guardar inspección"}
+          </button>
+        </div>
+      </div>
+    </Panel>
+  );
+}
+
+// Historial del equipo: solo las 3 últimas inspecciones.
+const ENGRASE_HISTORIAL_MAX = 3;
+function HistorialEngrase({ fila, frecuencia, puedeRegistrar, usuario, onActualizar, onEliminar }) {
+  const [reparar, setReparar] = useState(null);
+  const [notaReparacion, setNotaReparacion] = useState("");
+  const [faltaNota, setFaltaNota] = useState(false);
+  const [eliminar, setEliminar] = useState(null);
+  const { e } = fila;
+  const lista = fila.lista.slice(0, ENGRASE_HISTORIAL_MAX);
+  return (
+    <Panel titulo={`Engrase — equipo ${e.codigo}`} subtitulo={[e.descripcion, e.modelo, e.flota].filter(Boolean).join(" · ")}>
+      <div className="ts-eng-hist-cab">
+        <div>
+          Última inspección: <b>{fila.ultima ? formatoFecha(fila.ultima.fecha) : "nunca"}</b> <DiasEngrase dias={fila.dias} frecuencia={frecuencia} />
+        </div>
+        <div className="ts-texto-dim">Frecuencia: {frecuencia ? `${frecuencia} días` : "sin definir"}</div>
+      </div>
+      {fila.lista.length > ENGRASE_HISTORIAL_MAX && (
+        <div className="ts-alm-subtitulo">Últimas {ENGRASE_HISTORIAL_MAX} inspecciones</div>
+      )}
+      {!lista.length ? (
+        <div className="ts-vacio">Este equipo aún no tiene inspecciones registradas.</div>
+      ) : (
+        <div className="ts-eng-hist">
+          {lista.map((r) => {
+            const rep = r.reparacion || {};
+            return (
+              <div key={r.id} className={"ts-eng-hist-item" + (r.resultado === "falla" ? " falla" : "")}>
+                <div className="ts-eng-hist-punto" />
+                <div className="ts-eng-hist-cuerpo">
+                  <div className="ts-eng-hist-linea">
+                    <span className="ts-mono">{formatoFecha(r.fecha)}</span>
+                    {r.turno && <span className={"ts-badge ts-badge-" + (r.turno === "noche" ? "noche" : "dia")}>{TEXTO_TURNO[r.turno] || r.turno}</span>}
+                    {r.resultado === "falla" ? (
+                      rep.estado === "reparado" ? (
+                        <span className="ts-badge ts-badge-ok">Falla reparada</span>
+                      ) : (
+                        <span className="ts-badge ts-badge-alerta">Falla por reparar</span>
+                      )
+                    ) : (
+                      <span className="ts-badge ts-badge-ok">Sin observaciones</span>
+                    )}
+                    <span className="ts-texto-dim">{usuarioDoc(r.inspector) || ""}</span>
+                  </div>
+                  {r.comentario && <div className="ts-eng-hist-texto">{r.comentario}</div>}
+                  {rep.estado === "reparado" && (
+                    <div className="ts-eng-hist-rep">
+                      Reparado {textoMarca(rep.fecha)}
+                      {rep.usuario ? ` · ${usuarioDoc(rep.usuario)}` : ""}
+                      {rep.nota ? ` — ${rep.nota}` : ""}
+                    </div>
+                  )}
+                  {puedeRegistrar && (
+                    <div className="ts-eng-hist-botones">
+                      {fallaPendiente(r) && (
+                        <button type="button" className="ts-btn-mini" onClick={() => (setNotaReparacion(""), setFaltaNota(false), setReparar(r))}>
+                          Marcar reparado
+                        </button>
+                      )}
+                      <button type="button" className="ts-btn-mini ts-btn-mini-alerta" onClick={() => setEliminar(r)}>
+                        Eliminar
+                      </button>
+                    </div>
+                  )}
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+
+      {reparar && (
+        <div className="ts-confirmar-cierre-fondo" onClick={() => setReparar(null)}>
+          <div className="ts-confirmar-cierre" role="alertdialog" aria-modal="true" onClick={(ev) => ev.stopPropagation()}>
+            <div className="ts-confirmar-cierre-titulo">¿Marcar como reparada la falla del equipo {e.codigo}?</div>
+            <div className="ts-confirmar-cierre-texto">{reparar.comentario}</div>
+            <label className="ts-campo ts-confirmar-campos">
+              <span>Detalle de la reparación</span>
+              <input
+                type="text"
+                value={notaReparacion}
+                className={faltaNota ? "ts-input-error" : ""}
+                onChange={(ev) => (setNotaReparacion(ev.target.value), setFaltaNota(false))}
+                autoFocus
+              />
+            </label>
+            {faltaNota && <div className="ts-verificaciones-error">Escribe el detalle de la reparación para continuar.</div>}
+            <div className="ts-confirmar-cierre-botones">
+              <button type="button" className="ts-btn-ghost" onClick={() => setReparar(null)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="ts-btn"
+                onClick={() => {
+                  if (!notaReparacion.trim()) return setFaltaNota(true);
+                  onActualizar({ ...reparar, reparacion: { estado: "reparado", fecha: marcaDeTiempo(), usuario, nota: notaReparacion.trim() } });
+                  setReparar(null);
+                }}
+              >
+                Sí, confirmar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      {eliminar && (
+        <div className="ts-confirmar-cierre-fondo" onClick={() => setEliminar(null)}>
+          <div className="ts-confirmar-cierre" role="alertdialog" aria-modal="true" onClick={(ev) => ev.stopPropagation()}>
+            <div className="ts-confirmar-cierre-titulo">¿Eliminar la inspección del {formatoFecha(eliminar.fecha)}?</div>
+            <div className="ts-confirmar-cierre-texto">Equipo {e.codigo}. Esta acción no se puede deshacer.</div>
+            <div className="ts-confirmar-cierre-botones">
+              <button type="button" className="ts-btn-ghost" onClick={() => setEliminar(null)}>
+                Cancelar
+              </button>
+              <button
+                type="button"
+                className="ts-btn ts-btn-peligro"
+                onClick={() => {
+                  onEliminar(eliminar.id);
+                  setEliminar(null);
+                }}
+              >
+                Eliminar
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
+// Almacén: búsqueda por número de parte (botón de la caja en Requerimientos)
+// El Administrador actualiza el inventario subiendo el Excel semanal.
+// ---------------------------------------------------------------------------
+function IconoCaja() {
+  return (
+    <svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.9" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M4 8.2 12 4.6l8 3.6v8.4L12 20.4 4 16.6Z" />
+      <path d="M4 8.2 12 12l8-3.8" />
+      <path d="M12 12v8.4" />
+      <path d="M4 8.2 2 11.4l8 3.8L12 12" />
+      <path d="M20 8.2l2 3.2-8 3.8L12 12" />
+    </svg>
+  );
+}
+
+const normalNP = (t) => String(t || "").toUpperCase().replace(/[^A-Z0-9]/g, "");
+
+function FichaInventario({ item }) {
+  const disp = item.cantidad_disponible === null || item.cantidad_disponible === "" || item.cantidad_disponible === undefined ? 0 : Number(item.cantidad_disponible);
+  const dato = (etiqueta, valor, clase = "") => (
+    <div className={"ts-alm-dato " + clase}>
+      <span>{etiqueta}</span>
+      <b>{valor === null || valor === undefined || valor === "" ? "—" : valor}</b>
+    </div>
+  );
+  return (
+    <div className="ts-alm-ficha">
+      <div className="ts-alm-ficha-cab">
+        <div>
+          <div className="ts-alm-ficha-np">{item.numero_parte}</div>
+          <div className="ts-alm-ficha-desc">{item.descripcion || "Sin descripción"}</div>
+        </div>
+        <span className={"ts-alm-stock " + (disp > 0 ? "ok" : "no")}>{disp > 0 ? `${numeroMiles(disp)} disponibles` : "Sin stock disponible"}</span>
+      </div>
+      <div className="ts-alm-datos">
+        {dato("Número de parte", item.numero_parte, "ts-mono")}
+        {dato("Descripción", item.descripcion)}
+        {dato("Detalle", item.detalle)}
+        {dato("Unidad", item.unidad)}
+        {dato("Cantidad disponible", numeroMiles(item.cantidad_disponible), "ts-mono ts-alm-dato-clave")}
+        {dato("Cantidad neta", numeroMiles(item.cantidad_neta), "ts-mono")}
+        {dato("Cantidad en recepción", numeroMiles(item.cantidad_recepcion), "ts-mono")}
+        {dato("Ubicación", item.ubicacion, "ts-mono")}
+      </div>
+    </div>
+  );
+}
+
+function BuscadorAlmacen({ esAdmin, usuario }) {
+  const [imp, setImp] = useState(undefined);
+  const [texto, setTexto] = useState("");
+  const [resultados, setResultados] = useState([]);
+  const [buscando, setBuscando] = useState(false);
+  const [error, setError] = useState("");
+  const [abierto, setAbierto] = useState(null);
+  const refConsulta = useRef(0);
+
+  function cargarImp() {
+    db.leerImportacion("inventario").then(setImp, (e) => (setImp(null), setError(e.message || String(e))));
+  }
+  useEffect(cargarImp, []);
+
+  useEffect(() => {
+    const q = texto.trim();
+    setAbierto(null);
+    if (normalNP(q).length < 2) {
+      setResultados([]);
+      setBuscando(false);
+      return;
+    }
+    setBuscando(true);
+    const n = ++refConsulta.current;
+    const t = setTimeout(async () => {
+      try {
+        const r = await db.buscarInventario(q);
+        if (n === refConsulta.current) {
+          setResultados(r);
+          setError("");
+        }
+      } catch (e) {
+        if (n === refConsulta.current) setError(e.message || String(e));
+      } finally {
+        if (n === refConsulta.current) setBuscando(false);
+      }
+    }, 300);
+    return () => clearTimeout(t);
+  }, [texto]);
+
+  const q = normalNP(texto);
+  const exactos = resultados.filter((r) => normalNP(r.numero_parte) === q || normalNP(r.segundo_numero) === q);
+  const otros = resultados.filter((r) => !exactos.includes(r));
+
+  return (
+    <Panel
+      titulo="Almacén"
+      subtitulo={esAdmin && imp ? `Inventario: ${numeroMiles(imp.filas)} ítems` : undefined}
+      acciones={esAdmin ? <ImportarExcel tipo="inventario" usuario={usuario} onImportado={cargarImp} texto="Actualizar inventario (Excel)" /> : null}
+    >
+      <div className="ts-alm-buscar">
+        <IconoLupa />
+        <input
+          type="search"
+          autoFocus
+          value={texto}
+          /* Se quitan solos los guiones y espacios (6V-5686 → 6V5686) */
+          onChange={(e) => setTexto(e.target.value.replace(/[\s\-‐-―]+/g, ""))}
+          placeholder="Número de parte"
+          aria-label="Número de parte"
+          autoComplete="off"
+          spellCheck={false}
+        />
+      </div>
+      <div className="ts-alm-meta">
+        {imp ? <MetaImportacion imp={imp} conUsuario={false} /> : imp === null && !error ? "Aún no se cargó el inventario." : ""}
+      </div>
+      {error ? (
+        <div className="ts-vacio">{error}</div>
+      ) : q.length < 2 ? (
+        <div className="ts-alm-ayuda">Escribe el número de parte con o sin guiones y espacios.</div>
+      ) : buscando && !resultados.length ? (
+        <div className="ts-vacio">Buscando…</div>
+      ) : !resultados.length ? (
+        <div className="ts-vacio">No se encontró “{texto.trim()}” en el inventario.</div>
+      ) : (
+        <div className="ts-alm-resultados">
+          {exactos.map((r) => (
+            <FichaInventario key={r.id} item={r} />
+          ))}
+          {otros.length > 0 && (
+            <>
+              <div className="ts-alm-subtitulo">{exactos.length ? "Otras coincidencias" : "Coincidencias"} ({otros.length})</div>
+              <div className="ts-alm-lista">
+                {otros.map((r) =>
+                  abierto === r.id ? (
+                    <div key={r.id} onClick={() => setAbierto(null)}>
+                      <FichaInventario item={r} />
+                    </div>
+                  ) : (
+                    <button key={r.id} type="button" className="ts-alm-fila" onClick={() => setAbierto(r.id)}>
+                      <span className="ts-mono ts-alm-fila-np">{r.numero_parte}</span>
+                      <span className="ts-alm-fila-desc">{r.descripcion}</span>
+                      <span className={"ts-alm-fila-disp " + (Number(r.cantidad_disponible) > 0 ? "ok" : "no")}>{numeroMiles(r.cantidad_disponible) || "0"}</span>
+                    </button>
+                  )
+                )}
+              </div>
+            </>
+          )}
+        </div>
+      )}
+    </Panel>
+  );
+}
+
+// ---------------------------------------------------------------------------
 // Vista: Historial
 // ---------------------------------------------------------------------------
 
@@ -7757,8 +9173,10 @@ function coloresResaltado(acento) {
     : { todas: "#ffe44d", actual: "#ff9632" };
 }
 
-const VISTAS_CON_BUSQUEDA = ["trabajos", "aceites", "requerimientos", "historial"];
+const VISTAS_CON_BUSQUEDA = ["trabajos", "aceites", "requerimientos", "componentes", "engrase", "historial"];
 const PLACEHOLDER_BUSQUEDA = {
+  componentes: "Buscar equipo o componente",
+  engrase: "Buscar equipo o comentario",
   trabajos: "Buscar en trabajos",
   aceites: "Buscar en aceites",
   requerimientos: "Buscar en requerimientos",
@@ -11444,6 +12862,9 @@ function Estilos() {
       .ts-confirmar-cierre-texto { font-size: calc(13.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); margin-bottom: 18px; line-height: 1.45; }
       .ts-confirmar-cierre-botones { display: flex; justify-content: flex-end; gap: 8px; flex-wrap: wrap; }
       .ts-confirmar-campos { margin: -4px 0 14px; }
+      /* Campos de los cuadros de confirmación: como el registro de trabajo, sin borde negro al escribir */
+      .ts-confirmar-cierre input, .ts-confirmar-cierre select, .ts-confirmar-cierre textarea { border: 1px solid transparent; }
+      .ts-confirmar-cierre input:focus, .ts-confirmar-cierre select:focus, .ts-confirmar-cierre textarea:focus { outline: none; border-color: var(--border); background: var(--panel); }
       /* Datos automáticos del formulario (solo se muestran) */
       .ts-dato-fijo { border: 1px solid transparent; padding: 7px 9px; border-radius: 3px; font-size: calc(13px * var(--ts-escala-fuente, 1)); font-weight: 600; color: var(--text); min-height: 34px; box-sizing: border-box; }
       .ts-dato-acento { background: color-mix(in srgb, var(--amber) 32%, var(--panel)); }
@@ -11634,6 +13055,14 @@ function Estilos() {
       .ts-accion-row-split .ts-btn-crear:hover { transform: translateY(-2px); filter: brightness(1.06); }
       .ts-accion-row-split .ts-btn-exportar { width: 46px; height: 46px; border-radius: 12px; }
       .ts-accion-row-split .ts-btn-crear { width: 60px; height: 60px; border-radius: 18px; }
+      /* Almacén (caja): entre Exportar y "+" */
+      .ts-accion-row-split .ts-btn-almacen {
+        width: 60px; height: 60px; border-radius: 18px; padding: 0;
+        display: flex; align-items: center; justify-content: center;
+        box-shadow: 0 6px 16px rgba(0, 0, 0, 0.28);
+        transition: transform 0.12s, filter 0.12s;
+      }
+      .ts-accion-row-split .ts-btn-almacen:hover { transform: translateY(-2px); filter: brightness(1.06); }
       .ts-accion-row-split .ts-export-menu {
         top: auto; left: auto;
         bottom: 0;
@@ -12129,6 +13558,278 @@ function Estilos() {
       }
       .ts-bottom-nav-item-activo .ts-bottom-nav-icono { background: var(--amber-dim); color: var(--amber); }
       .ts-bottom-nav-item-activo .ts-bottom-nav-texto { color: var(--sidebar-text); font-weight: 700; }
+      /* Muchas opciones: la barra se desliza de lado (sin barra visible) */
+      .ts-bottom-nav-desliza { justify-content: flex-start; overflow-x: auto; scrollbar-width: none; scroll-snap-type: x proximity; }
+      .ts-bottom-nav-desliza::-webkit-scrollbar { display: none; }
+      .ts-bottom-nav-desliza .ts-bottom-nav-item { flex: 1 0 auto; min-width: 72px; padding: 2px 6px; scroll-snap-align: center; }
+      .ts-bottom-nav-desliza .ts-bottom-nav-texto { overflow: visible; text-overflow: clip; }
+
+      /* ---- Carga de Excel (Componentes y Almacén) ---- */
+      .ts-btn-excel { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
+      .ts-btn-excel svg { color: #1f7a45; }
+      .ts-imp-meta { font-size: calc(12px * var(--ts-escala-fuente, 1)); color: var(--text-dim); white-space: nowrap; }
+      .ts-imp-dialogo { max-width: 460px; }
+      .ts-imp-archivo {
+        display: flex; align-items: center; gap: 8px; margin: 2px 0 8px; padding: 8px 10px;
+        background: var(--panel-2); border-radius: 8px; font-size: calc(13px * var(--ts-escala-fuente, 1)); font-weight: 600;
+        overflow: hidden;
+      }
+      .ts-imp-archivo span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ts-imp-archivo svg { color: #1f7a45; flex-shrink: 0; }
+      .ts-imp-aviso { margin: 6px 0; padding: 8px 10px; border-radius: 8px; background: var(--yellow-dim); color: var(--yellow); font-size: calc(12.5px * var(--ts-escala-fuente, 1)); }
+      .ts-imp-progreso { height: 6px; border-radius: 6px; background: var(--panel-2); overflow: hidden; margin: 10px 0 4px; }
+      .ts-imp-progreso > div { height: 100%; background: var(--amber); transition: width 0.2s; }
+
+      /* Chips deslizables (modelos, equipos, flotas) */
+      .ts-chips-desliza { display: flex; gap: 6px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; min-width: 0; }
+      .ts-chips-desliza::-webkit-scrollbar { display: none; }
+      .ts-chips-desliza .ts-chip { flex-shrink: 0; border-radius: 999px; padding: 6px 12px; font-weight: 600; display: inline-flex; align-items: center; gap: 6px; }
+      .ts-chip-n { font-size: calc(11px * var(--ts-escala-fuente, 1)); opacity: 0.75; font-weight: 600; }
+      .ts-chip-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+
+      /* ---- Componentes ---- */
+      .ts-comp-acciones { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; justify-content: flex-end; }
+      .ts-comp-barra { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
+      .ts-comp-barra .ts-segmento { flex-shrink: 0; }
+      /* Sin barra de desplazamiento vertical: se ven todas las filas */
+      .ts-comp-tabla-wrap { overflow-x: auto; overflow-y: visible; border: 1px solid var(--border); border-radius: 0; }
+      .ts-comp-tabla { border-collapse: separate; border-spacing: 0; width: max-content; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); }
+      .ts-comp-tabla thead th:not(.ts-comp-col-nombre) { width: 84px; min-width: 84px; }
+      .ts-comp-tabla-wrap { width: fit-content; max-width: 100%; }
+      /* Filas de alto fijo: la tabla y la gráfica quedan alineadas */
+      .ts-comp-tabla th, .ts-comp-tabla td { padding: 0 10px; height: 33px; box-sizing: border-box; border-bottom: 1px solid var(--border); white-space: nowrap; }
+      .ts-comp-tabla thead th { height: 40px; }
+      .ts-comp-tabla thead th { background: var(--panel); text-align: right; font-weight: 600; color: var(--text-dim); }
+      .ts-comp-tabla td { text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; background: var(--panel); }
+      /* Vida del componente (27 000 h): verde < 60 %, amarillo 60–90 %, rojo ≥ 90 % */
+      :root { --ts-vida-verde: #2f9e44; --ts-vida-amarillo: #f5c518; --ts-vida-rojo: #e03131; }
+      .ts-comp-tabla td.ts-vida-verde { background: var(--green-dim); color: var(--green); }
+      .ts-comp-tabla td.ts-vida-amarillo { background: var(--yellow-dim); color: var(--yellow); font-weight: 600; }
+      .ts-comp-tabla td.ts-vida-rojo { background: var(--red-dim); color: var(--red); font-weight: 700; }
+      .ts-vida-barra-verde { background: var(--ts-vida-verde) !important; }
+      .ts-vida-barra-amarillo { background: var(--ts-vida-amarillo) !important; }
+      .ts-vida-barra-rojo { background: var(--ts-vida-rojo) !important; }
+      .ts-vida-texto-verde { color: var(--ts-vida-verde); }
+      .ts-vida-texto-amarillo { color: #b58900; }
+      .ts-vida-texto-rojo { color: var(--ts-vida-rojo); }
+      .ts-comp-tabla .ts-comp-col-nombre { position: sticky; left: 0; z-index: 1; background: var(--panel); text-align: left; font-weight: 600; color: var(--text);
+        border-right: 1px solid var(--border); min-width: 170px; }
+      .ts-comp-tabla thead .ts-comp-col-nombre { z-index: 3; color: var(--text-dim); }
+      .ts-comp-tabla tbody tr:hover .ts-comp-col-nombre { background: var(--panel-2); }
+      .ts-comp-tabla tbody tr:last-child th, .ts-comp-tabla tbody tr:last-child td { border-bottom: none; }
+      .ts-comp-vacio { color: var(--text-dim); text-align: center !important; background: var(--panel) !important; }
+      .ts-comp-equipo-btn {
+        background: none; border: none; font: inherit; color: var(--text); font-weight: 700; cursor: pointer; padding: 2px 4px; border-radius: 4px;
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      }
+      .ts-comp-equipo-btn:hover { background: var(--panel-2); text-decoration: underline; }
+      .ts-comp-leyenda { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 10px; font-size: calc(11.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); }
+      .ts-comp-leyenda-escala { width: 54px; height: 10px; border-radius: 3px; background: linear-gradient(90deg, color-mix(in srgb, #ef8a17 5%, var(--panel)), color-mix(in srgb, #ef8a17 43%, var(--panel))); border: 1px solid var(--border); }
+      .ts-comp-leyenda-vacio { margin-left: 10px; font-weight: 700; }
+      .ts-comp-equipos { margin-bottom: 12px; }
+      .ts-comp-ficha { border: 1px solid var(--border); border-radius: 12px; overflow: hidden; }
+      /* Tabla a la izquierda y gráfica del equipo elegido a la derecha */
+      .ts-comp-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(420px, 1fr); gap: 16px; align-items: start; }
+      @media (max-width: 1100px) { .ts-comp-layout { grid-template-columns: 1fr; } }
+      .ts-comp-grafica { position: relative; border: 1px solid var(--border); }
+      .ts-comp-tabla-grafica { width: 100%; table-layout: fixed; }
+      .ts-comp-tabla-grafica tbody tr { cursor: pointer; }
+      .ts-comp-tabla-grafica tbody tr:hover > * { background: var(--panel-2); }
+      .ts-comp-tabla-grafica .ts-comp-g-nombre { width: 150px; text-align: left; position: static; border-right: none; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+      .ts-comp-tabla-grafica thead .ts-comp-g-nombre, .ts-comp-tabla-grafica thead .ts-comp-g-horas { font-size: calc(11px * var(--ts-escala-fuente, 1)); text-transform: uppercase; letter-spacing: 0.04em; }
+      .ts-comp-tabla-grafica thead .ts-comp-g-equipo { text-align: center; color: var(--text); overflow: hidden; text-overflow: ellipsis; }
+      .ts-comp-g-equipo b { font-weight: 700; margin-right: 8px; }
+      .ts-comp-g-equipo span { font-weight: 400; color: var(--text-dim); font-size: calc(12px * var(--ts-escala-fuente, 1)); }
+      .ts-comp-tabla-grafica .ts-comp-g-horas { width: 92px; text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 600; }
+      .ts-comp-tabla-grafica td.ts-comp-g-barra { background: var(--panel); }
+      .ts-comp-g-barra .ts-comp-barra-fondo { display: block; }
+      .ts-comp-tabla-grafica tr.ts-comp-g-sel > * { background: var(--panel-2); font-weight: 800; }
+      .ts-comp-tabla-grafica tr.ts-comp-g-sel .ts-comp-barra-fondo { box-shadow: 0 0 0 2px var(--panel), 0 0 0 3px var(--text-dim); }
+      .ts-comp-tabla td.ts-comp-celda-sel { outline: 2px solid var(--text); outline-offset: -2px; }
+      .ts-comp-cuadro {
+        position: absolute; left: 50%; transform: translateX(-50%); z-index: 5; min-width: 220px;
+        background: var(--panel); border: 1px solid var(--border); box-shadow: 0 10px 28px rgba(0, 0, 0, 0.18);
+        padding: 10px 14px; display: flex; flex-direction: column; gap: 2px; cursor: pointer;
+      }
+      .ts-comp-cuadro b { font-size: calc(13px * var(--ts-escala-fuente, 1)); }
+      .ts-comp-cuadro span { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: calc(15px * var(--ts-escala-fuente, 1)); font-weight: 700; }
+      .ts-comp-tabla td { cursor: pointer; }
+      /* Equipo elegido: columna resaltada suavemente */
+      .ts-comp-tabla thead th.ts-comp-sel { background: var(--panel-2); }
+      .ts-comp-tabla th.ts-comp-sel .ts-comp-equipo-btn { text-decoration: underline; }
+      .ts-comp-tabla td.ts-comp-sel { filter: brightness(0.93) saturate(1.15); font-weight: 700; }
+      .ts-comp-ficha-cab { display: flex; justify-content: space-between; align-items: flex-end; gap: 12px; padding: 12px 16px; border-bottom: 1px solid var(--border); flex-wrap: wrap; }
+      .ts-comp-ficha-equipo { font-size: calc(14px * var(--ts-escala-fuente, 1)); font-weight: 700; }
+      .ts-comp-ficha-sub { color: var(--text-dim); font-size: calc(12.5px * var(--ts-escala-fuente, 1)); margin-top: 2px; }
+      .ts-comp-ficha-resumen { font-size: calc(12.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); }
+      .ts-comp-ficha-resumen b { color: var(--text); }
+      .ts-comp-lista { padding: 0 16px 8px; }
+      .ts-comp-fila { display: grid; grid-template-columns: minmax(120px, 160px) minmax(60px, 1fr) 80px; align-items: center; gap: 12px; padding: 7px 0; border-bottom: 1px solid var(--border); }
+      .ts-comp-fila-cab { padding: 10px 0 8px; }
+      .ts-comp-fila-cab span { font-size: calc(11px * var(--ts-escala-fuente, 1)); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim); font-weight: 600; }
+      .ts-comp-fila-cab span:nth-child(3) { text-align: right; }
+      .ts-comp-fila-pct { text-align: right; font-weight: 700; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); font-variant-numeric: tabular-nums; }
+      .ts-comp-fila:last-child { border-bottom: none; }
+      .ts-comp-fila-nombre { font-weight: 600; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); }
+      .ts-comp-barra-fondo { height: 10px; background: var(--panel-2); overflow: hidden; }
+      .ts-comp-barra-relleno { display: block; height: 100%; }
+      .ts-comp-fila-horas { text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); font-weight: 600; }
+      .ts-comp-fila-vacia .ts-comp-fila-nombre, .ts-comp-fila-vacia .ts-comp-fila-horas { color: var(--text-dim); font-weight: 500; }
+
+      /* ---- Engrase ---- */
+      .ts-eng-resumen { grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .ts-eng-kpi { font: inherit; color: var(--text); text-align: left; cursor: pointer; transition: background 0.15s, box-shadow 0.15s; }
+      .ts-eng-kpi:hover { background: var(--panel-2); }
+      .ts-eng-kpi.activo { background: var(--panel-2); box-shadow: inset 0 0 0 1px var(--text-dim); }
+      .ts-kpi-aviso { border-top-color: var(--yellow); }
+
+      /* Filtro de Componentes: solo Modelo y Equipo, sin espacio vacío */
+      .ts-filtros-popover:has(.ts-filtros-dos) { width: min(460px, calc(100vw - 40px)); }
+      .ts-filtros-popover .ts-filtros-dos { grid-template-columns: 1fr 1fr; }
+      .ts-eng-inicio { display: grid; grid-template-columns: repeat(auto-fit, minmax(420px, 1fr)); gap: 20px; }
+      .ts-eng-inicio-tabla { table-layout: fixed; }
+      .ts-eng-inicio-tabla th:nth-child(1) { width: 18%; }
+      .ts-eng-inicio-tabla th:nth-child(2) { width: 30%; }
+      .ts-eng-inicio-tabla th:nth-child(3) { width: 30%; }
+      .ts-eng-inicio-tabla th:nth-child(4) { width: 22%; }
+      .ts-eng-inicio-tabla tbody tr { cursor: pointer; }
+      .ts-badge-aviso-eng { background: var(--yellow-dim); color: var(--yellow); }
+      .ts-badge-neutro-eng { background: var(--panel-2); color: var(--text); }
+      .ts-eng-flotas { align-self: flex-start; overflow-x: auto; scrollbar-width: none; }
+      .ts-eng-flotas .ts-segmento-op { white-space: nowrap; }
+      .ts-eng-frec {
+        background: transparent; border: 1px solid transparent; border-radius: 6px; padding: 3px 8px; margin-left: -8px;
+        font: inherit; color: var(--text); cursor: pointer; white-space: nowrap;
+      }
+      .ts-eng-frec:hover { border-color: var(--border); background: var(--panel-2); }
+      .ts-eng-frec.vacia { color: var(--text-dim); border: 1px dashed var(--border); margin-left: 0; font-size: calc(12px * var(--ts-escala-fuente, 1)); }
+      .ts-eng-grupo + .ts-eng-grupo { margin-top: 18px; }
+      .ts-eng-grupo-titulo { display: flex; align-items: center; gap: 8px; font-size: calc(12px * var(--ts-escala-fuente, 1)); font-weight: 700; letter-spacing: 0.04em; text-transform: uppercase; color: var(--text-dim); margin-bottom: 6px; }
+      .ts-eng-grupo-titulo span { background: var(--panel-2); border-radius: 999px; padding: 1px 8px; font-size: calc(11px * var(--ts-escala-fuente, 1)); }
+      /* Anchos proporcionales: Comentario se queda con lo que sobra, sin exagerar */
+      .ts-eng-tabla { table-layout: fixed; width: 100%; min-width: 960px; }
+      .ts-eng-tabla th:nth-child(1) { width: 8%; }
+      .ts-eng-tabla th:nth-child(2) { width: 9%; }
+      .ts-eng-tabla th:nth-child(3) { width: 13%; }
+      .ts-eng-tabla th:nth-child(4) { width: 13%; }
+      .ts-eng-tabla th:nth-child(5) { width: 14%; }
+      .ts-eng-tabla th:nth-child(6) { width: 13%; }
+      .ts-eng-tabla th:nth-child(7) { width: 11%; }
+      .ts-eng-tabla th:nth-child(8) { width: 11%; }
+      .ts-eng-tabla th:nth-child(9) { width: 8%; }
+      .ts-eng-equipo { font-weight: 700; }
+      .ts-eng-accion { text-align: right; }
+      .ts-fila-click { cursor: pointer; }
+      .ts-eng-dias { display: inline-flex; align-items: center; gap: 6px; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); font-weight: 600; white-space: nowrap; }
+      .ts-eng-dias::before { content: ""; width: 8px; height: 8px; border-radius: 50%; background: currentColor; }
+      .ts-eng-dias-ok { color: var(--green); }
+      .ts-eng-dias-aviso { color: var(--yellow); }
+      .ts-eng-dias-alerta { color: var(--red); }
+      .ts-eng-dias-neutro { color: var(--text-dim); }
+      .ts-eng-dias-nunca { color: var(--red); background: var(--red-dim); padding: 2px 8px; border-radius: 999px; }
+      .ts-eng-dias-nunca::before { display: none; }
+      /* Ocupa dos columnas del formulario: cada opción mide lo mismo que "Equipo" */
+      .ts-eng-resultado-campo { grid-column: span 2; }
+      .ts-eng-resultado { display: grid; grid-template-columns: 1fr 1fr; column-gap: 12px; row-gap: 8px; }
+      .ts-eng-resultado button {
+        height: 34px; padding: 0 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; border-radius: 6px; border: 1px solid var(--border); background: var(--panel-2); color: var(--text-dim);
+        font: inherit; font-size: calc(13px * var(--ts-escala-fuente, 1)); font-weight: 600; cursor: pointer; text-align: center; line-height: 1.2;
+      }
+      .ts-eng-resultado button.activo.ok { border-color: var(--green); background: var(--green-dim); color: var(--green); }
+      .ts-eng-resultado button.activo.falla { border-color: var(--red); background: var(--red-dim); color: var(--red); }
+      .ts-eng-hist-cab { display: flex; align-items: center; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
+      .ts-eng-hist-cab > div { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+      .ts-eng-hist { position: relative; padding-left: 4px; }
+      .ts-eng-hist-item { display: grid; grid-template-columns: 18px 1fr; gap: 10px; position: relative; padding-bottom: 14px; }
+      .ts-eng-hist-item::before { content: ""; position: absolute; left: 6px; top: 16px; bottom: 0; width: 2px; background: var(--border); }
+      .ts-eng-hist-item:last-child::before { display: none; }
+      .ts-eng-hist-punto { width: 14px; height: 14px; border-radius: 50%; background: var(--green); margin-top: 3px; box-shadow: 0 0 0 3px var(--green-dim); }
+      .ts-eng-hist-item.falla .ts-eng-hist-punto { background: var(--red); box-shadow: 0 0 0 3px var(--red-dim); }
+      .ts-eng-hist-linea { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; font-size: calc(13px * var(--ts-escala-fuente, 1)); }
+      .ts-eng-hist-texto { margin-top: 4px; font-size: calc(13px * var(--ts-escala-fuente, 1)); }
+      .ts-eng-hist-rep { margin-top: 4px; font-size: calc(12px * var(--ts-escala-fuente, 1)); color: var(--green); }
+      .ts-eng-hist-botones { display: flex; gap: 8px; margin-top: 8px; }
+      .ts-btn-peligro { background: var(--red) !important; border-color: var(--red) !important; color: #fff !important; }
+
+      /* ---- Almacén ---- */
+      /* Buscador: mismo estilo que los campos del registro de trabajo (sin borde negro) */
+      .ts-alm-buscar { display: flex; align-items: center; gap: 8px; padding: 0 12px; border: none; border-radius: 0; background: var(--panel-2); }
+      .ts-alm-buscar svg { color: var(--text-dim); flex-shrink: 0; }
+      .ts-alm-buscar input, .ts-alm-buscar input:focus, .ts-alm-buscar input:focus-visible { flex: 1; border: none !important; outline: none !important; background: transparent !important; padding: 9px 0 !important;
+        font-size: calc(14px * var(--ts-escala-fuente, 1)); font-weight: 600; letter-spacing: 0.02em; text-transform: uppercase; color: var(--text); box-shadow: none !important; min-width: 0; }
+      /* Cuadro de almacén más angosto */
+      .ts-modal-form:has(.ts-alm-buscar) { max-width: 820px; }
+      .ts-alm-buscar input::placeholder { text-transform: none; font-weight: 500; letter-spacing: 0; }
+      .ts-alm-meta { font-size: calc(12px * var(--ts-escala-fuente, 1)); color: var(--text-dim); margin: 6px 2px 12px; min-height: 16px; }
+      .ts-alm-ayuda { color: var(--text-dim); font-size: calc(13px * var(--ts-escala-fuente, 1)); padding: 8px 2px; }
+      .ts-alm-resultados { display: flex; flex-direction: column; gap: 12px; }
+      .ts-alm-ficha { border: 1px solid var(--border); border-radius: 0; overflow: hidden; background: var(--panel); }
+      .ts-alm-ficha-cab { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 12px 16px; }
+      .ts-alm-ficha-np { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: calc(17px * var(--ts-escala-fuente, 1)); font-weight: 700; }
+      .ts-alm-ficha-desc { color: var(--text-dim); font-size: calc(12.5px * var(--ts-escala-fuente, 1)); margin-top: 2px; }
+      .ts-alm-stock { flex-shrink: 0; font-size: calc(12px * var(--ts-escala-fuente, 1)); font-weight: 700; padding: 4px 10px; border-radius: 999px; white-space: nowrap; }
+      .ts-alm-stock.ok { background: var(--green-dim); color: var(--green); }
+      .ts-alm-stock.no { background: var(--red-dim); color: var(--red); }
+      .ts-alm-datos { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
+      .ts-alm-dato { padding: 10px 16px; border-top: 1px solid var(--border); border-right: 1px solid var(--border); min-width: 0; }
+      .ts-alm-dato:nth-child(4n) { border-right: none; }
+      .ts-alm-dato > span {
+        display: block; font-size: calc(11px * var(--ts-escala-fuente, 1)); text-transform: uppercase; letter-spacing: 0.04em; color: var(--text-dim);
+        font-weight: 600; margin-bottom: 3px; font-family: var(--app-font-family, Inter, -apple-system, "Segoe UI", Roboto, sans-serif);
+      }
+      .ts-alm-dato b { font-weight: 600; font-size: calc(13.5px * var(--ts-escala-fuente, 1)); overflow-wrap: anywhere; }
+      .ts-alm-dato.ts-mono b { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; }
+      .ts-alm-dato-clave b { font-size: calc(17px * var(--ts-escala-fuente, 1)); font-weight: 800; }
+      .ts-alm-lista { display: flex; flex-direction: column; border: 1px solid var(--border); border-radius: 0; overflow: hidden; }
+      .ts-alm-fila { display: grid; grid-template-columns: 120px 1fr auto; gap: 12px; align-items: center; text-align: left; padding: 10px 14px; background: var(--panel); border: none; border-bottom: 1px solid var(--border); color: var(--text); font: inherit; cursor: pointer; }
+      .ts-alm-fila:last-child { border-bottom: none; }
+      .ts-alm-fila:hover { background: var(--panel-2); }
+      .ts-alm-fila-np { font-weight: 700; }
+      .ts-alm-fila-desc { color: var(--text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: calc(13px * var(--ts-escala-fuente, 1)); }
+      .ts-alm-fila-disp { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-weight: 700; padding: 2px 9px; border-radius: 999px; font-size: calc(12px * var(--ts-escala-fuente, 1)); }
+      .ts-alm-fila-disp.ok { background: var(--green-dim); color: var(--green); }
+      .ts-alm-fila-disp.no { background: var(--red-dim); color: var(--red); }
+
+
+
+      @media (max-width: 720px) {
+        .ts-comp-tabla-grafica .ts-comp-g-nombre { width: 120px; }
+        .ts-comp-g-equipo span { display: none; }
+        .ts-comp-fila { grid-template-columns: minmax(0, 1fr) 76px; gap: 4px 10px; }
+        .ts-comp-fila .ts-comp-barra-fondo { grid-column: 1 / -1; grid-row: 2; }
+        .ts-comp-fila-cab span:nth-child(2) { display: none; }
+        .ts-comp-layout { grid-template-columns: 1fr; }
+        .ts-comp-acciones { justify-content: flex-start; }
+        .ts-eng-resumen { grid-template-columns: 1fr 1fr; }
+        .ts-eng-inicio { grid-template-columns: 1fr; }
+        /* Engrase en celular: cada equipo como tarjeta */
+        .ts-eng-tabla { min-width: 0; table-layout: auto; }
+        .ts-eng-tabla thead { display: none; }
+        .ts-eng-tabla, .ts-eng-tabla tbody { display: block; }
+        .ts-eng-tabla tr { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; padding: 10px 2px; border-bottom: 1px solid var(--border); align-items: center; }
+        .ts-eng-tabla td { display: block; padding: 0 !important; border: none !important; }
+        .ts-eng-tabla td[data-label="Equipo"] { grid-column: 1; grid-row: 1; font-size: calc(15px * var(--ts-escala-fuente, 1)); }
+        .ts-eng-tabla td[data-label="Modelo"] { grid-column: 2; grid-row: 1; color: var(--text-dim); font-size: calc(12px * var(--ts-escala-fuente, 1)); }
+        .ts-eng-tabla td.ts-eng-accion { grid-column: 3; grid-row: 1 / span 2; }
+        .ts-eng-tabla td[data-label="Tiempo"] { grid-column: 1 / span 2; grid-row: 2; }
+        .ts-eng-tabla td[data-label="Última"] { display: none; }
+        .ts-eng-tabla td[data-label="Estado"] { grid-column: 1 / -1; grid-row: 3; }
+        .ts-eng-tabla td[data-label="Estado"] .ts-texto-dim { display: none; }
+        .ts-eng-tabla td[data-label="Comentario"] { grid-column: 1 / -1; grid-row: 4; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); }
+        .ts-eng-tabla td[data-label="Comentario"] .ts-texto-dim { display: none; }
+
+        .ts-eng-resultado-campo { grid-column: 1 / -1; }
+        .ts-eng-resultado { grid-template-columns: 1fr; }
+        .ts-eng-tabla td[data-label="Frecuencia"] { grid-column: 1 / -1; grid-row: 5; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); }
+        .ts-eng-tabla td[data-label="Frecuencia"]::before { content: "Frecuencia: "; color: var(--text-dim); }
+        .ts-eng-tabla td[data-label="Personal"] { display: none; }
+        .ts-alm-datos { grid-template-columns: 1fr 1fr; }
+        .ts-alm-dato:nth-child(4n) { border-right: 1px solid var(--border); }
+        .ts-alm-dato:nth-child(2n) { border-right: none; }
+        .ts-alm-ficha-cab { flex-direction: column; }
+        .ts-alm-fila { grid-template-columns: 1fr auto; }
+        .ts-alm-fila-desc { grid-column: 1 / -1; grid-row: 2; }
+      }
 
       @media (max-width: 720px) {
         .ts-root { grid-template-columns: 1fr; }

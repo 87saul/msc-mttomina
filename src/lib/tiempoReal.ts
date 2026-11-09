@@ -11,7 +11,7 @@
 import { supabase } from "./supabase";
 import { desdeFila } from "./datos";
 
-const TABLAS = ["trabajos", "aceites", "requerimientos"];
+const TABLAS = ["trabajos", "aceites", "requerimientos", "engrases"];
 
 // onCambio(tabla, tipo: "INSERT" | "UPDATE" | "DELETE", fila | null, id, creadoPor)
 // onPerdido(): la conexión se cortó y volvió (conviene recargar todo).

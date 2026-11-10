@@ -448,6 +448,8 @@ export async function wordReporteTurno(ctx) {
   const color = ctx.color || "#4a8fe0";
   const cfg = ctx.cfg;
   const mc = ctx.mc;
+  // Letra de la tabla elegida en Configuración → Reportes (12 px normal).
+  const PX = Math.min(16, Math.max(10, Number(cfg.letraReporte) || 12));
   const margen = Math.round(1.27 * CM);
   const util = CARTA_ANCHO - 2 * margen;
   const logo = await cargarLogo(ctx.logoUrl);
@@ -590,21 +592,21 @@ export async function wordReporteTurno(ctx) {
       const celda = (i, hijos) =>
         new TableCell({ width: { size: anchos[i], type: WidthType.DXA }, shading: fondo, borders: bordes, margins: m, children: hijos });
       const desc = [
-        ...f.lineas.map((l) => parrafo(texto(l.t, { px: 12, negrita: l.tit, color: l.tit ? "#111827" : "#1B1F24" }), { linea: 240 })),
-        ...(f.nota ? [parrafo(texto(`Síntoma y causa: ${f.nota}`, { px: 12, cursiva: true, color: gris }), { antes: 30 })] : []),
+        ...f.lineas.map((l) => parrafo(texto(l.t, { px: PX, negrita: l.tit, color: l.tit ? "#111827" : "#1B1F24" }), { linea: 240 })),
+        ...(f.nota ? [parrafo(texto(`Síntoma y causa: ${f.nota}`, { px: PX, cursiva: true, color: gris }), { antes: 30 })] : []),
       ];
       const personal = f.personal.length
-        ? f.personal.map((p) => parrafo(texto(p, { px: 12, color: "#374151" })))
-        : [parrafo(texto("Sin intervención", { px: 12, cursiva: true, color: "#9CA3AF" }))];
+        ? f.personal.map((p) => parrafo(texto(p, { px: PX, color: "#374151" })))
+        : [parrafo(texto("Sin intervención", { px: PX, cursiva: true, color: "#9CA3AF" }))];
       const [fe, te] = f.ok ? PILL.ok : PILL.no;
       return new TableRow({
         cantSplit: true,
         children: [
-          celda(0, [parrafo(texto(f.equipo, { px: 12, color: "#111827" }))]),
+          celda(0, [parrafo(texto(f.equipo, { px: PX, color: "#111827" }))]),
           celda(1, desc.length ? desc : [parrafo(texto(""))]),
           celda(2, personal),
-          celda(3, [parrafo(texto(f.ubicacion, { px: 12 }))]),
-          celda(4, [parrafo(texto(String(f.horario).replace(/ /g, "\u00A0"), { px: 11 }))]),
+          celda(3, [parrafo(texto(f.ubicacion, { px: PX }))]),
+          celda(4, [parrafo(texto(String(f.horario).replace(/ /g, "\u00A0"), { px: PX - 1 }))]),
           celda(5, [parrafo(texto(f.ok ? " Operativo " : " No Operativo ", { px: 8.5, peso: 600, color: te, fondo: fe }))]),
         ],
       });

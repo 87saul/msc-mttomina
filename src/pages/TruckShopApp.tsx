@@ -1434,6 +1434,8 @@ const CONFIG_REPORTE_INICIAL = {
   // documentos impresos.
   fuente: "",
   tamanoLetra: "1",
+  // Tamaño de letra (px) de la tabla del reporte diario (reporte de turno).
+  letraReporte: "12",
   pie: "Documento generado por el sistema TRUCK SHOP",
   // Cajetín (encabezado del reporte de turno): textos de los datos del
   // documento y tamaños (px).
@@ -1477,6 +1479,8 @@ const registroReporte = { config: CONFIG_REPORTE_INICIAL, logoUrl: null, nombreA
 
 function imprimirReporteTurno(trabajos, impresoPor) {
   const cfg = registroReporte.config;
+  // Letra de la tabla elegida en Configuración → Reportes (12 px normal).
+  const letra = Math.min(16, Math.max(10, Number(cfg.letraReporte) || 12));
   const color = registroReporte.color || "#4a8fe0";
   const emitido = fechaEmisionDoc();
   const mc = medidasCajetin(cfg);
@@ -1603,7 +1607,7 @@ function imprimirReporteTurno(trabajos, impresoPor) {
   abrirVistaImpresion(`<html><head><title>${escaparHTML(cfg.titulo)}</title>
     <style>
       * { -webkit-print-color-adjust: exact; print-color-adjust: exact; box-sizing: border-box; }
-      body { font-family: ${LETRA_DOC}; color: #1b1f24; font-size: 10.5px; }
+      body { font-family: ${LETRA_DOC}; color: #0b0d10; font-size: 10.5px; -webkit-font-smoothing: antialiased; text-rendering: geometricPrecision; }
       .hoja { page-break-after: always; }
       .hoja:last-child { page-break-after: auto; }
       .encabezado { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid #d5d9df; margin-bottom: 12px; table-layout: fixed; }
@@ -1636,14 +1640,14 @@ function imprimirReporteTurno(trabajos, impresoPor) {
       .tabla tr { page-break-inside: avoid; break-inside: avoid; }
       .tabla th { background: ${color}14; color: #374151; font-size: 8.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em; text-align: left; padding: 6px 7px; border-bottom: 1.5px solid ${color}; }
       /* Letra de 9 pt (12 px) con interlineado sencillo para leer mejor */
-      .tabla td { padding: 6px 7px; border-bottom: 1px solid #eef0f2; vertical-align: top; text-align: left; font-size: 12px; line-height: 1.15; }
+      .tabla td { padding: 6px 7px; border-bottom: 1px solid #eef0f2; vertical-align: top; text-align: left; font-size: ${letra}px; line-height: 1.18; color: #0b0d10; }
       .tabla tbody tr:last-child td { border-bottom: none; }
       .tabla tbody tr:nth-child(even) td { background: #f9fafb; }
-      td.eq { font-weight: 400; white-space: nowrap; font-size: 12px; color: #111827; }
+      td.eq { font-weight: 500; white-space: nowrap; font-size: ${letra}px; color: #000; }
       td.desc { line-height: 1.15; }
-      td.desc .tit { font-weight: 700; color: #111827; }
+      td.desc .tit { font-weight: 700; color: #000; }
       td.desc .nota { font-style: italic; color: #6b7280; margin-top: 2px; }
-      td.pers { color: #374151; }
+      td.pers { color: #111827; }
       td.hora { white-space: nowrap; font-variant-numeric: tabular-nums; }
       .estado { display: inline-block; padding: 2px 7px; font-weight: 600; font-size: 8.5px; white-space: nowrap; }
       .estado.ok { background: #e3f4ea; color: #1f7a45; }
@@ -3297,7 +3301,8 @@ export default function TruckShopApp() {
               tiposAceite={tiposAceite.filter((t) => t.activo).map((t) => t.nombre)}
               mostrarFiltros={mostrarFiltros}
               puedeEditarTrabajos={permisos.crearTrabajo && permisos.nav.includes("trabajos")}
-              engrase={permisos.nav.includes("engrase") ? { registros: engrases, frecuencias: frecuenciasEngrase } : null}
+              // Engrase en Inicio lo ven todos (aunque no registren engrases)
+              engrase={{ registros: engrases, frecuencias: frecuenciasEngrase }}
               onEditarEquipo={(codigo) => {
                 const registro = ultimoTrabajoDeEquipo(codigo, trabajos);
                 if (!registro) return;
@@ -3468,7 +3473,7 @@ export default function TruckShopApp() {
         </FiltrosContext.Provider>
       </div>
 
-      <nav className={"ts-bottom-nav" + (navVisible.length > 5 ? " ts-bottom-nav-desliza" : "")} ref={refNavInferior}>
+      <nav className={"ts-bottom-nav" + (navVisible.length > 6 ? " ts-bottom-nav-desliza" : "")} ref={refNavInferior}>
         {navVisible.map((item) => (
           <button
             key={item.key}
@@ -8027,7 +8032,7 @@ function Componentes({ esAdmin, usuario, equipos }) {
 
   const cabecera = (
     <div className="ts-comp-acciones">
-      <MetaImportacion imp={imp} />
+      <MetaImportacion imp={imp} conUsuario={false} />
       {esAdmin && <ImportarExcel tipo="componentes" usuario={usuario} onImportado={cargar} texto="Actualizar horas (Excel)" />}
 
     </div>
@@ -8339,6 +8344,10 @@ function ResumenEngrase({ registros, equipos, frecuencias = {} }) {
             .filter((r) => flotaDe(r) === flota)
             .sort((a, b) => String(a.equipo).localeCompare(String(b.equipo), "es", { numeric: true }));
           const fallas = lista.filter((r) => r.resultado === "falla").length;
+          // Seguimiento: fallas aún sin reparar de la flota (de cualquier turno)
+          const pendientes = registros
+            .filter((r) => fallaPendiente(r) && flotaDe(r) === flota)
+            .sort((a, b) => String(a.fecha).localeCompare(String(b.fecha)));
           return (
             <div key={flota} className="ts-eng-inicio-flota">
               <h4 className="ts-grafico-subtitulo">
@@ -8390,6 +8399,24 @@ function ResumenEngrase({ registros, equipos, frecuencias = {} }) {
               ) : (
                 <div className="ts-vacio">Sin engrases registrados en este turno.</div>
               )}
+              <div className="ts-eng-pendientes">
+                <span className="ts-eng-pendientes-titulo">Fallas por reparar ({pendientes.length})</span>
+                {pendientes.length ? (
+                  <div className="ts-chips-select">
+                    {pendientes.map((r) => (
+                      <span
+                        key={r.id}
+                        className="ts-badge ts-badge-alerta"
+                        title={`Equipo ${r.equipo} · ${formatoFecha(r.fecha)}${r.turno ? ` · Turno ${r.turno === "noche" ? "Noche" : "Día"}` : ""}\n${r.comentario || ""}\nPersonal: ${usuarioDoc(r.inspector) || "—"}`}
+                      >
+                        {r.equipo} · {formatoFecha(r.fecha).slice(0, 5)}
+                      </span>
+                    ))}
+                  </div>
+                ) : (
+                  <span className="ts-texto-dim">Ninguna.</span>
+                )}
+              </div>
             </div>
           );
         })}
@@ -9719,6 +9746,16 @@ function PanelConfigReporte({ config, onCambiar, trabajos, usuario }) {
             {FUENTES_DISPONIBLES.filter((f) => !f.nombre.startsWith("Predeterminada")).map((f) => (
               <option key={f.nombre} value={f.valor}>
                 {f.nombre}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="ts-campo">
+          <span>Letra del reporte diario</span>
+          <select value={config.letraReporte || "12"} onChange={(e) => campo("letraReporte")(e.target.value)}>
+            {["10", "11", "12", "13", "14", "15", "16"].map((v) => (
+              <option key={v} value={v}>
+                {v} px{v === "12" ? " (normal)" : ""}
               </option>
             ))}
           </select>
@@ -11846,10 +11883,11 @@ function IconoEditarMini() {
 
 function IconoImprimir() {
   return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-      <path d="M6 9V2h12v7" />
-      <path d="M6 18H4a2 2 0 0 1-2-2v-5a2 2 0 0 1 2-2h16a2 2 0 0 1 2 2v5a2 2 0 0 1-2 2h-2" />
-      <path d="M6 14h12v8H6z" />
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round">
+      <path d="M7 8.5V3.5h10v5" />
+      <path d="M7 17H5a2 2 0 0 1-2-2v-4.5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2V15a2 2 0 0 1-2 2h-2" />
+      <path d="M7 13.5h10v7H7z" />
+      <path d="M17.5 11.5h.01" />
     </svg>
   );
 }
@@ -12768,7 +12806,7 @@ function Estilos() {
       .ts-aviso-horas { color: var(--red); font-size: calc(11.5px * var(--ts-escala-fuente, 1)); margin-top: 3px; }
       .ts-aviso-horas-fuerte { font-weight: 600; }
       /* Inicio: botón imprimir de los cuadros e Indicadores de mantenimiento */
-      .ts-btn-imprimir-panel svg { width: 16px; height: 16px; }
+      .ts-btn-imprimir-panel svg { width: 17px; height: 17px; }
       .ts-acciones-panel { display: flex; align-items: center; gap: 6px; margin-left: auto; }
       .ts-kpi-flota + .ts-kpi-flota { margin-top: 16px; }
       .ts-tabla-kpi th, .ts-tabla-kpi td { white-space: nowrap; text-align: right; }
@@ -13561,8 +13599,14 @@ function Estilos() {
       /* Muchas opciones: la barra se desliza de lado (sin barra visible) */
       .ts-bottom-nav-desliza { justify-content: flex-start; overflow-x: auto; scrollbar-width: none; scroll-snap-type: x proximity; }
       .ts-bottom-nav-desliza::-webkit-scrollbar { display: none; }
-      .ts-bottom-nav-desliza .ts-bottom-nav-item { flex: 1 0 auto; min-width: 72px; padding: 2px 6px; scroll-snap-align: center; }
-      .ts-bottom-nav-desliza .ts-bottom-nav-texto { overflow: visible; text-overflow: clip; }
+      /* Se ven 6 opciones a la vez; si hay más, se desliza para ver el resto */
+      .ts-bottom-nav-desliza .ts-bottom-nav-item { flex: 0 0 calc(100% / 6); min-width: 0; scroll-snap-align: start; }
+      .ts-bottom-nav-desliza { scroll-snap-type: x mandatory; }
+      .ts-bottom-nav-desliza .ts-bottom-nav-icono, .ts-bottom-nav-item .ts-bottom-nav-icono { max-width: 100%; }
+      /* Con 6 o más opciones: textos un poco más chicos para que entren */
+      .ts-bottom-nav:has(> .ts-bottom-nav-item:nth-child(6)) .ts-bottom-nav-texto { font-size: calc(9.5px * var(--ts-escala-fuente, 1)); letter-spacing: -0.02em; overflow: visible; text-overflow: clip; }
+      .ts-bottom-nav:has(> .ts-bottom-nav-item:nth-child(6)) .ts-bottom-nav-item { padding-left: 0; padding-right: 0; }
+      .ts-bottom-nav:has(> .ts-bottom-nav-item:nth-child(6)) .ts-bottom-nav-icono { width: 48px; }
 
       /* ---- Carga de Excel (Componentes y Almacén) ---- */
       .ts-btn-excel { display: inline-flex; align-items: center; gap: 7px; white-space: nowrap; }
@@ -13693,6 +13737,14 @@ function Estilos() {
       .ts-eng-inicio-tabla th:nth-child(3) { width: 30%; }
       .ts-eng-inicio-tabla th:nth-child(4) { width: 22%; }
       .ts-eng-inicio-tabla tbody tr { cursor: pointer; }
+      /* Cada flota usa las mismas filas (título · tabla · fallas): así los
+         títulos "Fallas por reparar" quedan alineados entre flotas */
+      .ts-eng-inicio { row-gap: 0; }
+      .ts-eng-inicio-flota { display: grid; grid-row: span 3; grid-template-rows: subgrid; align-content: start; }
+      .ts-eng-pendientes { align-self: start; padding-top: 14px; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); }
+      .ts-eng-pendientes-titulo { display: block; font-weight: 600; color: var(--text-dim); margin-bottom: 6px; }
+      .ts-eng-pendientes .ts-chips-select { display: flex; flex-wrap: wrap; gap: 6px; }
+      .ts-eng-pendientes .ts-badge { cursor: pointer; }
       .ts-badge-aviso-eng { background: var(--yellow-dim); color: var(--yellow); }
       .ts-badge-neutro-eng { background: var(--panel-2); color: var(--text); }
       .ts-eng-flotas { align-self: flex-start; overflow-x: auto; scrollbar-width: none; }
@@ -13801,28 +13853,35 @@ function Estilos() {
         .ts-comp-layout { grid-template-columns: 1fr; }
         .ts-comp-acciones { justify-content: flex-start; }
         .ts-eng-resumen { grid-template-columns: 1fr 1fr; }
-        .ts-eng-inicio { grid-template-columns: 1fr; }
-        /* Engrase en celular: cada equipo como tarjeta */
+        .ts-eng-inicio { grid-template-columns: 1fr; row-gap: 0; }
+        .ts-eng-inicio-flota + .ts-eng-inicio-flota { margin-top: 18px; }
+        .ts-eng-inicio-tabla th:nth-child(1) { width: 17%; }
+        .ts-eng-inicio-tabla th:nth-child(2) { width: 25%; }
+        .ts-eng-inicio-tabla th:nth-child(3) { width: 36%; }
+        .ts-eng-inicio-tabla th:nth-child(4) { width: 22%; }
+        .ts-eng-inicio-tabla .ts-badge { white-space: normal; line-height: 1.25; }
+        /* Engrase en celular: cada equipo como tarjeta.
+           Fila 1: equipo · frecuencia · estado · Registrar
+           Fila 2: tiempo desde la última inspección
+           Fila 3: comentario */
         .ts-eng-tabla { min-width: 0; table-layout: auto; }
         .ts-eng-tabla thead { display: none; }
         .ts-eng-tabla, .ts-eng-tabla tbody { display: block; }
-        .ts-eng-tabla tr { display: grid; grid-template-columns: auto 1fr auto; gap: 4px 10px; padding: 10px 2px; border-bottom: 1px solid var(--border); align-items: center; }
-        .ts-eng-tabla td { display: block; padding: 0 !important; border: none !important; }
+        .ts-eng-tabla tr { display: grid; grid-template-columns: auto 1fr auto auto; gap: 4px 10px; padding: 10px 2px; border-bottom: 1px solid var(--border); align-items: center; }
+        .ts-eng-tabla td { display: block; padding: 0 !important; border: none !important; width: auto !important; }
         .ts-eng-tabla td[data-label="Equipo"] { grid-column: 1; grid-row: 1; font-size: calc(15px * var(--ts-escala-fuente, 1)); }
-        .ts-eng-tabla td[data-label="Modelo"] { grid-column: 2; grid-row: 1; color: var(--text-dim); font-size: calc(12px * var(--ts-escala-fuente, 1)); }
-        .ts-eng-tabla td.ts-eng-accion { grid-column: 3; grid-row: 1 / span 2; }
-        .ts-eng-tabla td[data-label="Tiempo"] { grid-column: 1 / span 2; grid-row: 2; }
-        .ts-eng-tabla td[data-label="Última"] { display: none; }
-        .ts-eng-tabla td[data-label="Estado"] { grid-column: 1 / -1; grid-row: 3; }
-        .ts-eng-tabla td[data-label="Estado"] .ts-texto-dim { display: none; }
-        .ts-eng-tabla td[data-label="Comentario"] { grid-column: 1 / -1; grid-row: 4; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); }
+        .ts-eng-tabla td[data-label="Frecuencia"] { grid-column: 2; grid-row: 1; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); white-space: nowrap; }
+        .ts-eng-tabla td[data-label="Frecuencia"]::before { content: "Frecuencia: "; color: var(--text-dim); }
+        .ts-eng-tabla td[data-label="Frecuencia"] .ts-eng-frec { margin-left: 0; }
+        .ts-eng-tabla td[data-label="Estado"] { grid-column: 3; grid-row: 1; }
+        .ts-eng-tabla td[data-label="Estado"] > .ts-texto-dim { display: none; }
+        .ts-eng-tabla td.ts-eng-accion { grid-column: 4; grid-row: 1; }
+        .ts-eng-tabla td[data-label="Tiempo"] { grid-column: 1 / -1; grid-row: 2; }
+        .ts-eng-tabla td[data-label="Comentario"] { grid-column: 1 / -1; grid-row: 3; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); color: var(--text-dim); }
         .ts-eng-tabla td[data-label="Comentario"] .ts-texto-dim { display: none; }
-
+        .ts-eng-tabla td[data-label="Modelo"], .ts-eng-tabla td[data-label="Última"], .ts-eng-tabla td[data-label="Personal"] { display: none; }
         .ts-eng-resultado-campo { grid-column: 1 / -1; }
         .ts-eng-resultado { grid-template-columns: 1fr; }
-        .ts-eng-tabla td[data-label="Frecuencia"] { grid-column: 1 / -1; grid-row: 5; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); }
-        .ts-eng-tabla td[data-label="Frecuencia"]::before { content: "Frecuencia: "; color: var(--text-dim); }
-        .ts-eng-tabla td[data-label="Personal"] { display: none; }
         .ts-alm-datos { grid-template-columns: 1fr 1fr; }
         .ts-alm-dato:nth-child(4n) { border-right: 1px solid var(--border); }
         .ts-alm-dato:nth-child(2n) { border-right: none; }
@@ -13952,6 +14011,14 @@ function Estilos() {
         .ts-stack > :not(.ts-panel):not(.ts-grid-2):not(.ts-accion-row-split) { margin-left: 10px; margin-right: 10px; }
         .ts-panel { border-left: none; border-right: none; border-radius: 0; }
         .ts-panel-head { padding: 12px 12px; }
+        /* Título y filtros en una fila si entran; si el título es largo, el
+           filtro y la impresión pasan a una fila arriba del título */
+        .ts-panel-head:has(> .ts-acciones-panel), .ts-panel-head:has(> .ts-filtro-panel) { flex-wrap: wrap-reverse; gap: 6px 10px; }
+        .ts-panel-head:has(> .ts-acciones-panel) > h3, .ts-panel-head:has(> .ts-filtro-panel) > h3 { flex: 1 1 auto; }
+        .ts-panel-head > .ts-acciones-panel, .ts-panel-head > .ts-filtro-panel { margin-left: auto; }
+        /* Resumen del filtro más compacto en los cuadros para que entre junto al título */
+        .ts-panel-head .ts-filtro-panel .ts-filtros-resumen { padding: 4px 9px; font-size: calc(10.5px * var(--ts-escala-fuente, 1)); }
+        .ts-panel-head .ts-filtro-panel { gap: 2px; }
         .ts-panel-body { padding: 10px 8px 12px; }
         .ts-tabla-cards tbody tr { margin-bottom: 8px; }
         .ts-ocultar-movil { display: none; }

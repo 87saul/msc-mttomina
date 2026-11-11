@@ -3302,7 +3302,13 @@ export default function TruckShopApp() {
               mostrarFiltros={mostrarFiltros}
               puedeEditarTrabajos={permisos.crearTrabajo && permisos.nav.includes("trabajos")}
               // Engrase en Inicio lo ven todos (aunque no registren engrases)
-              engrase={{ registros: engrases, frecuencias: frecuenciasEngrase }}
+              engrase={{
+                registros: engrases,
+                frecuencias: frecuenciasEngrase,
+                puedeCorregir: ROLES_CORRIGEN_ENGRASE.includes(rol),
+                usuario: datosUsuario.usuario,
+                onActualizar: actualizarEngrase,
+              }}
               onEditarEquipo={(codigo) => {
                 const registro = ultimoTrabajoDeEquipo(codigo, trabajos);
                 if (!registro) return;
@@ -3395,6 +3401,7 @@ export default function TruckShopApp() {
               registros={engrases}
               equipos={equiposOrden}
               puedeRegistrar={!!permisos.registrarEngrase}
+              puedeCorregir={ROLES_CORRIGEN_ENGRASE.includes(rol)}
               onCrear={agregarEngrase}
               onActualizar={actualizarEngrase}
               onEliminar={eliminarEngrase}
@@ -3899,7 +3906,16 @@ function Dashboard({ indicadores, filtros, setFiltros, trabajosFiltrados, trabaj
 
       <ResumenMensualAceites aceites={aceitesTodos} tiposCatalogo={tiposAceite} />
 
-      {engrase && <ResumenEngrase registros={engrase.registros} equipos={equipos} frecuencias={engrase.frecuencias} />}
+      {engrase && (
+        <ResumenEngrase
+          registros={engrase.registros}
+          equipos={equipos}
+          frecuencias={engrase.frecuencias}
+          puedeCorregir={engrase.puedeCorregir}
+          usuario={engrase.usuario}
+          onActualizar={engrase.onActualizar}
+        />
+      )}
 
       <TopAdicionesMotor aceites={aceitesTodos} />
 
@@ -4597,7 +4613,9 @@ function ResumenMensualAceites({ aceites, tiposCatalogo = [] }) {
             <div key={x.tipo} className={"ts-mes-fila" + (x.litros ? "" : " ts-mes-fila-cero")} title={`${x.tipo}: ${formatoLitros(x.litros)} en ${x.cantidad} registro(s)`}>
               <span className="ts-mes-tipo">{x.tipo}</span>
               <span className="ts-mes-barra">
-                <span style={{ width: `${(x.litros / max) * 100}%`, background: color }} />
+                <span className="ts-mes-pista">
+                  <span style={{ width: `${(x.litros / max) * 100}%`, background: color }} />
+                </span>
               </span>
               <span className="ts-mes-litros">{formatoLitros(x.litros)}</span>
             </div>
@@ -4623,8 +4641,8 @@ function ResumenMensualAceites({ aceites, tiposCatalogo = [] }) {
       }
     >
       <div className="ts-grid-2">
-        {bloque("adicion", "Adiciones", "var(--amber)")}
-        {bloque("derrame", "Derrames", "var(--red)")}
+        {bloque("adicion", "Adiciones", "var(--text)")}
+        {bloque("derrame", "Derrames", "var(--text)")}
       </div>
     </Panel>
   );
@@ -8205,6 +8223,9 @@ function diasDesde(fecha) {
   return Math.round((Date.UTC(ha, hm - 1, hd) - Date.UTC(a, m - 1, d)) / 86400000);
 }
 const ordenEngrase = (a, b) => String(b.fecha).localeCompare(String(a.fecha)) || String(b.creado_en || "").localeCompare(String(a.creado_en || ""));
+// Solo técnicos y supervisores (y el administrador) marcan una falla de
+// engrase como corregida.
+const ROLES_CORRIGEN_ENGRASE = ["Técnico", "Supervisor", "Administrador"];
 const fallaPendiente = (r) => r.resultado === "falla" && !(r.reparacion && r.reparacion.estado === "reparado");
 
 function EstadoEngrase({ ultima, pendientes }) {
@@ -8313,7 +8334,9 @@ function cuentaEngrase(filas) {
 
 // Inicio: "Engrase de equipos". Inspecciones registradas en la fecha y turno
 // elegidos (por defecto el turno actual), separadas por flota.
-function ResumenEngrase({ registros, equipos, frecuencias = {} }) {
+function ResumenEngrase({ registros, equipos, frecuencias = {}, puedeCorregir = false, usuario = "", onActualizar = null }) {
+  const [verId, setVerId] = useState(null); // inspección abierta en el cuadro
+  const ver = verId ? registros.find((r) => r.id === verId) || null : null;
   const [filtro, setFiltro] = useState(() => ({
     fecha: turnoOperativoActual().fecha,
     turno: turnoOperativoActual().turno,
@@ -8370,17 +8393,7 @@ function ResumenEngrase({ registros, equipos, frecuencias = {} }) {
                     </thead>
                     <tbody>
                       {lista.map((r) => (
-                        <tr
-                          key={r.id}
-                          title={[
-                            `Equipo ${r.equipo}${datosEquipo(r.equipo).modelo ? ` · ${datosEquipo(r.equipo).modelo}` : ""}`,
-                            `Fecha: ${formatoFecha(r.fecha)}${r.turno ? ` · Turno ${r.turno === "noche" ? "Noche" : "Día"}` : ""}`,
-                            `Estado: ${r.resultado === "falla" ? (r.reparacion && r.reparacion.estado === "reparado" ? "Falla reparada" : "Falla por reparar") : "Sin observaciones"}`,
-                            `Comentario: ${r.comentario || "—"}`,
-                            `Personal: ${usuarioDoc(r.inspector) || "—"}`,
-                            `Frecuencia: ${frecuencias[r.equipo] ? `${frecuencias[r.equipo]} días` : "sin definir"}`,
-                          ].join("\n")}
-                        >
+                        <tr key={r.id} title="Ver la inspección" onClick={() => setVerId(r.id)}>
                           <td className="ts-mono ts-eng-equipo">{r.equipo}</td>
                           <td>{datosEquipo(r.equipo).descripcion || "—"}</td>
                           <td>
@@ -8404,13 +8417,15 @@ function ResumenEngrase({ registros, equipos, frecuencias = {} }) {
                 {pendientes.length ? (
                   <div className="ts-chips-select">
                     {pendientes.map((r) => (
-                      <span
+                      <button
                         key={r.id}
-                        className="ts-badge ts-badge-alerta"
-                        title={`Equipo ${r.equipo} · ${formatoFecha(r.fecha)}${r.turno ? ` · Turno ${r.turno === "noche" ? "Noche" : "Día"}` : ""}\n${r.comentario || ""}\nPersonal: ${usuarioDoc(r.inspector) || "—"}`}
+                        type="button"
+                        className="ts-badge ts-badge-alerta ts-badge-boton"
+                        title="Ver la inspección"
+                        onClick={() => setVerId(r.id)}
                       >
                         {r.equipo} · {formatoFecha(r.fecha).slice(0, 5)}
-                      </span>
+                      </button>
                     ))}
                   </div>
                 ) : (
@@ -8421,7 +8436,112 @@ function ResumenEngrase({ registros, equipos, frecuencias = {} }) {
           );
         })}
       </div>
+      {ver && (
+        <CuadroInspeccionEngrase
+          registro={ver}
+          equipo={datosEquipo(ver.equipo)}
+          frecuencia={frecuencias[ver.equipo]}
+          puedeCorregir={puedeCorregir && !!onActualizar}
+          usuario={usuario}
+          onActualizar={onActualizar}
+          onCerrar={() => setVerId(null)}
+        />
+      )}
     </Panel>
+  );
+}
+
+// Cuadro con el detalle de una inspección de engrase (Inicio). Si la falla
+// está por reparar, técnicos y supervisores pueden marcarla como corregida.
+function CuadroInspeccionEngrase({ registro: r, equipo = {}, frecuencia, puedeCorregir, usuario, onActualizar, onCerrar }) {
+  const [corregir, setCorregir] = useState(false);
+  const [nota, setNota] = useState("");
+  const [falta, setFalta] = useState(false);
+  const rep = r.reparacion || {};
+  const pendiente = fallaPendiente(r);
+  useEffect(() => {
+    const tecla = (ev) => ev.key === "Escape" && onCerrar();
+    document.addEventListener("keydown", tecla);
+    return () => document.removeEventListener("keydown", tecla);
+  }, []);
+  const dato = (etiqueta, valor, clase = "") => (
+    <div className={"ts-alm-dato " + clase}>
+      <span>{etiqueta}</span>
+      <b>{valor === null || valor === undefined || valor === "" ? "—" : valor}</b>
+    </div>
+  );
+  function confirmar() {
+    if (!nota.trim()) return setFalta(true);
+    onActualizar({ ...r, reparacion: { estado: "reparado", fecha: marcaDeTiempo(), usuario, nota: nota.trim() } });
+    onCerrar();
+  }
+  return (
+    <div className="ts-confirmar-cierre-fondo" onClick={onCerrar}>
+      <div className="ts-confirmar-cierre ts-eng-cuadro" role="dialog" aria-modal="true" onClick={(ev) => ev.stopPropagation()}>
+        <div className="ts-eng-cuadro-cab">
+          <div>
+            <div className="ts-confirmar-cierre-titulo">Inspección de engrase — equipo {r.equipo}</div>
+            <div className="ts-texto-dim">{[equipo.descripcion, equipo.modelo, equipo.flota && `Flota ${equipo.flota}`].filter(Boolean).join(" · ")}</div>
+          </div>
+          <button type="button" className="ts-filtros-popover-cerrar" title="Cerrar" onClick={onCerrar}>
+            ×
+          </button>
+        </div>
+        <div className="ts-alm-ficha">
+          <div className="ts-alm-datos ts-eng-cuadro-datos">
+            {dato("Fecha", formatoFecha(r.fecha), "ts-mono")}
+            {dato("Turno", r.turno ? textoTurno(r.turno) : "")}
+            {dato("Personal", usuarioDoc(r.inspector))}
+            {dato("Frecuencia", frecuencia ? `${frecuencia} días` : "Sin definir")}
+            {dato(
+              "Estado",
+              r.resultado === "falla" ? (
+                <span className={"ts-badge " + (pendiente ? "ts-badge-alerta" : "ts-badge-ok")}>{pendiente ? "Falla por reparar" : "Falla corregida"}</span>
+              ) : (
+                <span className="ts-badge ts-badge-ok">Sin observaciones</span>
+              ),
+              "ts-eng-cuadro-ancho"
+            )}
+            {dato("Descripción", r.comentario, "ts-eng-cuadro-todo")}
+            {rep.estado === "reparado" &&
+              dato(
+                "Corrección",
+                `${textoMarca(rep.fecha)}${rep.usuario ? ` · ${usuarioDoc(rep.usuario)}` : ""}${rep.nota ? ` — ${rep.nota}` : ""}`,
+                "ts-eng-cuadro-todo"
+              )}
+          </div>
+        </div>
+        {pendiente && corregir && (
+          <>
+            <label className="ts-campo ts-confirmar-campos">
+              <span>Detalle de la corrección</span>
+              <input
+                type="text"
+                value={nota}
+                className={falta ? "ts-input-error" : ""}
+                onChange={(ev) => (setNota(ev.target.value), setFalta(false))}
+                onKeyDown={(ev) => ev.key === "Enter" && confirmar()}
+                autoFocus
+              />
+            </label>
+            {falta && <div className="ts-verificaciones-error">Escribe el detalle de la corrección para continuar.</div>}
+          </>
+        )}
+        {pendiente && !puedeCorregir && (
+          <div className="ts-texto-dim ts-eng-cuadro-nota">Solo técnicos y supervisores pueden marcar la falla como corregida.</div>
+        )}
+        <div className="ts-confirmar-cierre-botones">
+          <button type="button" className="ts-btn-ghost" onClick={corregir ? () => setCorregir(false) : onCerrar}>
+            {corregir ? "Cancelar" : "Cerrar"}
+          </button>
+          {pendiente && puedeCorregir && (
+            <button type="button" className="ts-btn" onClick={corregir ? confirmar : () => setCorregir(true)}>
+              {corregir ? "Sí, confirmar" : "Marcar como corregido"}
+            </button>
+          )}
+        </div>
+      </div>
+    </div>
   );
 }
 
@@ -8439,7 +8559,7 @@ const COLUMNAS_EXPORT_ENGRASE = [
   { clave: "personal", titulo: "Personal" },
 ];
 
-function Engrase({ registros, equipos, puedeRegistrar, onCrear, onActualizar, onEliminar, usuario, frecuencias = {}, onFrecuencia }) {
+function Engrase({ registros, equipos, puedeRegistrar, puedeCorregir = false, onCrear, onActualizar, onEliminar, usuario, frecuencias = {}, onFrecuencia }) {
   const [menuExportAbierto, setMenuExportAbierto] = useState(false);
   // Mismo filtro que Trabajos: Fecha, Turno, Flota, Equipo y Estado. Por
   // defecto la fecha y el turno actuales.
@@ -8702,6 +8822,7 @@ function Engrase({ registros, equipos, puedeRegistrar, onCrear, onActualizar, on
             fila={equipoDetalle}
             frecuencia={frecuencias[equipoDetalle.e.codigo]}
             puedeRegistrar={puedeRegistrar}
+            puedeCorregir={puedeCorregir}
             usuario={usuario}
             onActualizar={onActualizar}
             onEliminar={onEliminar}
@@ -8810,7 +8931,7 @@ function FormularioEngrase({ equipos, equipoInicial, usuario, onGuardar }) {
 
 // Historial del equipo: solo las 3 últimas inspecciones.
 const ENGRASE_HISTORIAL_MAX = 3;
-function HistorialEngrase({ fila, frecuencia, puedeRegistrar, usuario, onActualizar, onEliminar }) {
+function HistorialEngrase({ fila, frecuencia, puedeRegistrar, puedeCorregir = false, usuario, onActualizar, onEliminar }) {
   const [reparar, setReparar] = useState(null);
   const [notaReparacion, setNotaReparacion] = useState("");
   const [faltaNota, setFaltaNota] = useState(false);
@@ -8860,16 +8981,18 @@ function HistorialEngrase({ fila, frecuencia, puedeRegistrar, usuario, onActuali
                       {rep.nota ? ` — ${rep.nota}` : ""}
                     </div>
                   )}
-                  {puedeRegistrar && (
+                  {(puedeRegistrar || (puedeCorregir && fallaPendiente(r))) && (
                     <div className="ts-eng-hist-botones">
-                      {fallaPendiente(r) && (
+                      {puedeCorregir && fallaPendiente(r) && (
                         <button type="button" className="ts-btn-mini" onClick={() => (setNotaReparacion(""), setFaltaNota(false), setReparar(r))}>
-                          Marcar reparado
+                          Marcar corregido
                         </button>
                       )}
-                      <button type="button" className="ts-btn-mini ts-btn-mini-alerta" onClick={() => setEliminar(r)}>
-                        Eliminar
-                      </button>
+                      {puedeRegistrar && (
+                        <button type="button" className="ts-btn-mini ts-btn-mini-alerta" onClick={() => setEliminar(r)}>
+                          Eliminar
+                        </button>
+                      )}
                     </div>
                   )}
                 </div>
@@ -8882,7 +9005,7 @@ function HistorialEngrase({ fila, frecuencia, puedeRegistrar, usuario, onActuali
       {reparar && (
         <div className="ts-confirmar-cierre-fondo" onClick={() => setReparar(null)}>
           <div className="ts-confirmar-cierre" role="alertdialog" aria-modal="true" onClick={(ev) => ev.stopPropagation()}>
-            <div className="ts-confirmar-cierre-titulo">¿Marcar como reparada la falla del equipo {e.codigo}?</div>
+            <div className="ts-confirmar-cierre-titulo">¿Marcar como corregida la falla del equipo {e.codigo}?</div>
             <div className="ts-confirmar-cierre-texto">{reparar.comentario}</div>
             <label className="ts-campo ts-confirmar-campos">
               <span>Detalle de la reparación</span>
@@ -9133,9 +9256,9 @@ function DetalleTrabajo({ trabajo: t, onCerrar }) {
           "Personal que realizó el trabajo",
           (t.participantes || []).length ? (
             <div className="ts-detalle-personal">
-              {t.participantes.map((p) => (
-                <span key={p} className="ts-chip-persona">
-                  {p}
+              {usuariosDoc(t.participantes).map((u, i) => (
+                <span key={u + i} className="ts-chip-persona">
+                  {u}
                 </span>
               ))}
             </div>
@@ -12443,19 +12566,22 @@ function Estilos() {
       .ts-mes-nav .ts-btn-mini { width: 28px; height: 28px; font-size: calc(16px * var(--ts-escala-fuente, 1)); }
       .ts-mes-nombre { min-width: 118px; text-align: center; font-weight: 600; font-size: calc(13px * var(--ts-escala-fuente, 1)); }
       .ts-mes-nota { font-size: calc(12px * var(--ts-escala-fuente, 1)); color: var(--text-dim); margin-bottom: 8px; }
-      .ts-mes-bloque { background: var(--panel-2); border-radius: 8px; padding: 12px 14px 14px; min-width: 0; }
-      .ts-mes-cabecera { margin-bottom: 10px; }
-      .ts-mes-total { font-size: calc(26px * var(--ts-escala-fuente, 1)); font-weight: 700; line-height: 1.1; font-variant-numeric: tabular-nums; }
-      .ts-mes-sub { font-size: calc(12px * var(--ts-escala-fuente, 1)); color: var(--text-dim); display: flex; flex-wrap: wrap; gap: 4px 10px; margin-top: 2px; }
-      .ts-mes-dif.sube { color: var(--red); }
-      .ts-mes-dif.baja { color: var(--green, #2fa36b); }
-      .ts-mes-lista { display: flex; flex-direction: column; gap: 7px; }
-      .ts-mes-fila { display: grid; grid-template-columns: minmax(70px, 30%) 1fr 64px; align-items: center; gap: 10px; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); }
-      .ts-mes-fila-cero { color: var(--text-dim); }
-      .ts-mes-tipo { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-      .ts-mes-barra { height: 10px; background: var(--panel); border-radius: 5px; overflow: hidden; }
-      .ts-mes-barra > span { display: block; height: 100%; border-radius: 5px; min-width: 0; transition: width 0.25s; }
-      .ts-mes-litros { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
+      /* Adiciones y derrames: mismo estilo que los rankings de Inicio
+         (sin fondo, filas con línea punteada y barra negra) */
+      .ts-mes-bloque { background: transparent; border: none; border-radius: 0; padding: 0; min-width: 0; }
+      .ts-mes-cabecera { margin: 0 0 4px; }
+      .ts-mes-lista { display: flex; flex-direction: column; gap: 2px; }
+      .ts-mes-fila {
+        display: grid; grid-template-columns: minmax(90px, 26%) 1fr 72px; align-items: center; gap: 10px;
+        padding: 6px 4px; border-bottom: 1px dashed var(--border); font-size: calc(12.5px * var(--ts-escala-fuente, 1));
+      }
+      .ts-mes-fila:last-child { border-bottom: none; }
+      .ts-mes-tipo { font-family: var(--mono, monospace); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+      .ts-mes-fila-cero .ts-mes-tipo { color: var(--text-dim); }
+      .ts-mes-barra { display: block; min-width: 0; }
+      .ts-mes-pista { display: block; width: 100%; height: 8px; background: var(--panel-2); border-radius: 4px; overflow: hidden; }
+      .ts-mes-pista > span { display: block; height: 100%; border-radius: 4px; min-width: 0; opacity: 0.85; transition: width 0.25s; }
+      .ts-mes-litros { text-align: right; color: var(--text-dim); white-space: nowrap; font-variant-numeric: tabular-nums; }
       .ts-grafico-eje { stroke: var(--border); stroke-width: 1; }
       .ts-grafico-eje-texto { fill: var(--text-dim); font-size: calc(11px * var(--ts-escala-fuente, 1)); }
       .ts-grafico-valor-texto { fill: var(--text); font-size: calc(9.5px * var(--ts-escala-fuente, 1)); font-weight: 600; }
@@ -13816,6 +13942,16 @@ function Estilos() {
       .ts-alm-ayuda { color: var(--text-dim); font-size: calc(13px * var(--ts-escala-fuente, 1)); padding: 8px 2px; }
       .ts-alm-resultados { display: flex; flex-direction: column; gap: 12px; }
       .ts-alm-ficha { border: 1px solid var(--border); border-radius: 0; overflow: hidden; background: var(--panel); }
+      .ts-eng-cuadro { width: min(560px, calc(100vw - 24px)); max-width: none; text-align: left; }
+      .ts-eng-cuadro-cab { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; margin-bottom: 12px; }
+      .ts-eng-cuadro-cab .ts-texto-dim { font-size: calc(12.5px * var(--ts-escala-fuente, 1)); margin-top: 2px; }
+      .ts-eng-cuadro .ts-alm-ficha { margin-bottom: 12px; }
+      .ts-eng-cuadro-datos .ts-alm-dato { border-top: none; border-bottom: 1px solid var(--border); }
+      .ts-eng-cuadro-datos .ts-eng-cuadro-todo { grid-column: 1 / -1; border-right: none; border-bottom: none; }
+      .ts-eng-cuadro-datos .ts-eng-cuadro-todo + .ts-eng-cuadro-todo { border-top: 1px solid var(--border); }
+      .ts-eng-cuadro-datos .ts-eng-cuadro-todo b { font-weight: 500; white-space: pre-wrap; }
+      .ts-eng-cuadro-datos .ts-eng-cuadro-ancho { grid-column: 1 / -1; border-right: none; }
+      .ts-eng-cuadro-nota { font-size: calc(12.5px * var(--ts-escala-fuente, 1)); margin-bottom: 8px; }
       .ts-alm-ficha-cab { display: flex; justify-content: space-between; align-items: flex-start; gap: 12px; padding: 12px 16px; }
       .ts-alm-ficha-np { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: calc(17px * var(--ts-escala-fuente, 1)); font-weight: 700; }
       .ts-alm-ficha-desc { color: var(--text-dim); font-size: calc(12.5px * var(--ts-escala-fuente, 1)); margin-top: 2px; }
@@ -13924,6 +14060,17 @@ function Estilos() {
         .ts-stack { gap: 14px; }
 
         .ts-filtros-popover { top: 56px; right: 12px; width: calc(100vw - 24px); max-height: calc(100vh - 140px); }
+        /* Filtros de los paneles de Inicio: cuadro completo dentro de la
+           pantalla (antes se salía por la izquierda) con fondo oscurecido */
+        .ts-filtro-panel-popover {
+          position: fixed !important; top: 64px !important; left: 12px !important; right: 12px !important;
+          width: auto !important; max-height: calc(100vh - 150px) !important; overflow-y: auto !important; z-index: 80;
+          box-shadow: 0 0 0 100vmax rgba(0, 0, 0, 0.35), 0 12px 32px rgba(0, 0, 0, 0.25) !important;
+        }
+        .ts-filtro-panel-popover .ts-filtros { grid-template-columns: 1fr 1fr; }
+        .ts-filtro-panel-popover .ts-filtros-periodo { grid-template-columns: 1fr; }
+        .ts-filtro-panel-popover .ts-segmento-op { padding: 8px 4px; font-size: calc(12.5px * var(--ts-escala-fuente, 1)); }
+        .ts-eng-cuadro-datos { grid-template-columns: 1fr 1fr !important; }
         .ts-filtros-popover .ts-filtros { grid-template-columns: 1fr 1fr; }
 
         /* Filtros: grilla de 2 columnas a todo el ancho */

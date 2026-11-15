@@ -100,6 +100,20 @@ const SECCIONES_POR_FLOTA = ["supervision", "planificacion"];
 function grupoPorId(id) {
   return listaGrupos().find((g) => g.id === Number(id));
 }
+// ¿La persona es del grupo "Base Cero"? (el nombre del grupo, sin tildes ni
+// mayúsculas). Ese personal puede cargar los Excel que actualizan la app.
+const normalizarTexto = (t) =>
+  String(t || "")
+    .normalize("NFD")
+    .replace(/[\u0300-\u036f]/g, "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .toLowerCase();
+function esGrupoBaseCero(persona) {
+  if (!persona) return false;
+  const g = grupoPorId(persona.categoria);
+  return !!g && normalizarTexto(g.nombre) === "base cero";
+}
 function flotasDeGrupo(grupo, flotas) {
   const alcance = (grupo && grupo.alcance) || "separado";
   if (alcance === "conjunto" || alcance === "todas") return ["*"];
@@ -1747,6 +1761,7 @@ function imprimirRegistroTrabajo(trabajo) {
     ],
     campos: [
       ["Tipo de trabajo", trabajo.tipo_trabajo === "programado" ? "Programado" : "No programado"],
+      ["Horómetro", trabajo.horometro],
       ["Grupo", nombreGrupo(trabajo.grupo)],
       ["Ubicación", trabajo.ubicacion],
       ["Hora de inicio", trabajo.hora_inicio],
@@ -1780,6 +1795,7 @@ function imprimirRegistroAceite(aceite) {
       ["Tipo de aceite", aceite.tipo_aceite],
       ["Sistema del equipo", aceite.sistema_equipo],
       ["Horómetro", aceite.horometro],
+      ...(aceite.tipo_operacion === "adicion" ? [["Falla", aceite.falla], ["Tipo de falla", aceite.tipo_falla]] : []),
       ["Ubicación", aceite.ubicacion],
       ["Hora de inicio", aceite.hora_inicio],
       ["Hora de finalización", aceite.hora_fin],
@@ -1919,6 +1935,7 @@ function imprimirListaRequerimientos(lista) {
 const COLUMNAS_EXPORT_TRABAJOS = [
   { clave: "ot", titulo: "OT" },
   { clave: "equipo", titulo: "Equipo" },
+  { clave: "horometro", titulo: "Horómetro" },
   { clave: "flota", titulo: "Flota" },
   { clave: "tipo_trabajo", titulo: "Tipo" },
   { clave: "sintoma_causa", titulo: "Falla del equipo" },
@@ -1957,6 +1974,8 @@ const COLUMNAS_EXPORT_ACEITES = [
   { clave: "sistema_equipo", titulo: "Sistema" },
   { clave: "cantidad_litros", titulo: "Litros" },
   { clave: "horometro", titulo: "Horómetro" },
+  { clave: "falla", titulo: "Falla" },
+  { clave: "tipo_falla", titulo: "Tipo de falla" },
   { clave: "hora_inicio", titulo: "Hora inicio" },
   { clave: "hora_fin", titulo: "Hora fin" },
   { clave: "verificaciones", titulo: "Verificaciones" },
@@ -2328,6 +2347,9 @@ export default function TruckShopApp() {
   usuarioEnSesion.nombre = datosUsuario.nombre;
   usuarioEnSesion.usuario = datosUsuario.usuario;
   usuarioEnSesion.esAdmin = esAdmin;
+  // Cargar Excel (horas de componentes, inventario de almacén y los que se
+  // agreguen): el administrador y el personal del grupo Base Cero.
+  const puedeImportarExcel = esAdmin || esGrupoBaseCero(perfil);
   registroPersonal.lista = personal;
 
   // Registro releído después de que otra persona lo editó (ver ModalFormulario).
@@ -3387,6 +3409,7 @@ export default function TruckShopApp() {
               equipos={equiposOrden}
               mostrarFiltros={mostrarFiltros}
               esAdmin={rol === "Administrador"}
+              puedeImportarExcel={puedeImportarExcel}
               usuarioActual={datosUsuario.usuario}
             />          )}
 
@@ -3394,7 +3417,7 @@ export default function TruckShopApp() {
             <Historial trabajos={trabajos} aceites={aceites} equipos={equiposOrden} />
           )}
 
-          {vistaActiva === "componentes" && <Componentes esAdmin={rol === "Administrador"} usuario={datosUsuario.usuario} equipos={equiposOrden} />}
+          {vistaActiva === "componentes" && <Componentes esAdmin={puedeImportarExcel} usuario={datosUsuario.usuario} equipos={equiposOrden} />}
 
           {vistaActiva === "engrase" && (
             <Engrase
@@ -4931,14 +4954,14 @@ function PopoverFiltros({ activos, resumen = [], children }) {
   );
 }
 
-function FiltrosBar({ filtros, setFiltros, mostrarEquipo = true, contenidoEquipo, equipos, extraActivo, onLimpiarExtra }) {
+function FiltrosBar({ filtros, setFiltros, mostrarEquipo = true, contenidoEquipo, equipos, extraActivo, onLimpiarExtra, etiquetaFecha = "Fecha" }) {
   function set(campo, valor) {
     setFiltros((prev) => ({ ...prev, [campo]: valor }));
   }
   return (
     <div className="ts-filtros">
       <label className="ts-filtro">
-        <span>Fecha</span>
+        <span>{etiquetaFecha}</span>
         <input
           type="date"
           value={filtros.fecha}
@@ -5995,6 +6018,7 @@ function Trabajos({ trabajos, onMarcar, puedeCrear, onCrear, onActualizar, onEli
         ]}
       >
         <FiltrosBar
+          etiquetaFecha="Fecha de ingreso"
           filtros={filtros}
           setFiltros={setFiltros}
           equipos={equipos}
@@ -6255,6 +6279,7 @@ function FormularioTrabajo({ onGuardar, inicial, personal, equipos }) {
             <option value="no_disponible">No disponible</option>
           </CampoSelect>
           <CampoTexto etiqueta="OT" valor={form.ot || ""} onChange={(v) => campo("ot", v)} placeholder="Orden de trabajo" />
+          <CampoTexto etiqueta="Horómetro" tipo="number" valor={form.horometro ?? ""} onChange={(v) => campo("horometro", v)} placeholder="Horas del equipo" />
         </div>
 
         <label className="ts-campo ts-campo-full">
@@ -6466,7 +6491,7 @@ function Aceites({ registros, puedeCrear, puedeAdicion = true, puedeDerrame = tr
           </select>
         </label>
         <label className="ts-filtro">
-          <span>Fecha</span>
+          <span>Fecha de ingreso</span>
           <input type="date" value={filtroFecha} onChange={(e) => setFiltroFecha(e.target.value)} />
         </label>
         <label className="ts-filtro">
@@ -6656,6 +6681,9 @@ function Aceites({ registros, puedeCrear, puedeAdicion = true, puedeDerrame = tr
 
 // Verificaciones obligatorias antes de registrar una ADICIÓN de aceite
 // (evitan adiciones repetidas). Se guardan con el registro.
+// Solo en ADICIÓN: falla que causó la pérdida de aceite y su tipo.
+const FALLAS_ADICION = ["Manguera", "Tubo", "Sello", "Ninguno"];
+const TIPOS_FALLA_ADICION = ["Fricción", "Viejo", "Acople", "Ninguno"];
 const VERIFICACIONES_ADICION = [
   ["pm", "Se verificó fecha de próximo PM"],
   ["adiciones", "Se verificó últimas adiciones del aceite"],
@@ -6751,6 +6779,8 @@ function FormularioAceite({ onGuardar, inicial, tiposAceite, sistemasEquipo, per
     const extra = esDerrame
       ? { tipo_trabajo: null, sistema_equipo: "", horometro: "", hora_inicio: "", hora_fin: "" }
       : {};
+    // Falla y tipo de falla solo se guardan en una adición.
+    if (!esAdicion) Object.assign(extra, { falla: "", tipo_falla: "" });
     onGuardar({
       ...form,
       ...extra,
@@ -6899,6 +6929,26 @@ function FormularioAceite({ onGuardar, inicial, tiposAceite, sistemasEquipo, per
               </div>
             </>
           )}
+          {esAdicion && (
+            <>
+              <CampoSelect etiqueta="Falla" valor={form.falla || ""} onChange={(v) => campo("falla", v)}>
+                <option value="">Seleccionar</option>
+                {FALLAS_ADICION.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </CampoSelect>
+              <CampoSelect etiqueta="Tipo de falla" valor={form.tipo_falla || ""} onChange={(v) => campo("tipo_falla", v)}>
+                <option value="">Seleccionar</option>
+                {TIPOS_FALLA_ADICION.map((f) => (
+                  <option key={f} value={f}>
+                    {f}
+                  </option>
+                ))}
+              </CampoSelect>
+            </>
+          )}
         </div>
 
         <div className="ts-campo ts-campo-full">
@@ -6980,6 +7030,7 @@ function Requerimientos({
   equipos,
   mostrarFiltros,
   esAdmin = false,
+  puedeImportarExcel = false,
   usuarioActual = "",
 }) {
   const [mostrarForm, setMostrarForm] = useState(false);
@@ -7135,7 +7186,7 @@ function Requerimientos({
           </select>
         </label>
         <label className="ts-filtro">
-          <span>Fecha</span>
+          <span>Fecha de solicitud</span>
           <input type="date" value={filtroFecha} onChange={(e) => setFiltroFecha(e.target.value)} />
         </label>
         <label className="ts-filtro">
@@ -7204,7 +7255,7 @@ function Requerimientos({
 
       {almacenAbierto && (
         <ModalFormulario onCerrar={() => setAlmacenAbierto(false)}>
-          <BuscadorAlmacen esAdmin={esAdmin} usuario={usuarioActual} />
+          <BuscadorAlmacen esAdmin={puedeImportarExcel} usuario={usuarioActual} />
         </ModalFormulario>
       )}
 
@@ -8093,7 +8144,7 @@ function Componentes({ esAdmin, usuario, equipos }) {
         ) : !modelos.length ? (
           <div className="ts-vacio">
             Aún no se cargaron las horas de componentes.
-            {esAdmin ? " Usa “Actualizar horas (Excel)” para subir el archivo." : " El administrador las cargará desde un Excel."}
+            {esAdmin ? " Usa “Actualizar horas (Excel)” para subir el archivo." : " El administrador o el personal de Base Cero las cargará desde un Excel."}
           </div>
         ) : (
           <>
@@ -8662,6 +8713,7 @@ function Engrase({ registros, equipos, puedeRegistrar, puedeCorregir = false, on
         ]}
       >
         <FiltrosBar
+          etiquetaFecha="Fecha de ingreso"
           filtros={filtros}
           setFiltros={setFiltros}
           mostrarEquipo={false}
@@ -9238,6 +9290,7 @@ function DetalleTrabajo({ trabajo: t, onCerrar }) {
       <Panel titulo={`Trabajo — ${t.equipo} · Flota ${t.flota}`}>
         <div className="ts-detalle-grid">
           {dato("OT", t.ot, "ts-mono")}
+          {dato("Horómetro", t.horometro, "ts-mono")}
           {dato("Fecha", formatoFecha(t.fecha), "ts-mono")}
           {dato("Turno", textoTurno(t.turno))}
           {dato("Grupo", nombreGrupo(t.grupo))}
@@ -9542,6 +9595,7 @@ function Historial({ trabajos, aceites, equipos }) {
   const [fechaFin, setFechaFin] = useState(HOY);
   const [turno, setTurno] = useState("todos");
   const [grupo, setGrupo] = useState("todos");
+  const [tipoAceite, setTipoAceite] = useState("todos"); // solo historial de aceites
   // Qué registros mostrar en el historial: "trabajos" o "aceites".
   const [vista, setVista] = useState("trabajos");
   const verTrabajos = vista === "trabajos";
@@ -9554,7 +9608,10 @@ function Historial({ trabajos, aceites, equipos }) {
   useEffect(() => {
     setLimiteTrabajos(HISTORIAL_POR_PAGINA);
     setLimiteAceites(HISTORIAL_POR_PAGINA);
-  }, [equipo, fechaInicio, fechaFin, turno, grupo]);
+  }, [equipo, fechaInicio, fechaFin, turno, grupo, tipoAceite]);
+  const tiposAceiteHistorial = [...new Set(aceites.map((a) => a.tipo_aceite).filter(Boolean))].sort((a, b) =>
+    String(a).localeCompare(String(b), "es", { numeric: true })
+  );
 
   const trabajosOrdenados = trabajos
     .filter((t) => equipo === "todos" || t.equipo === equipo)
@@ -9570,6 +9627,7 @@ function Historial({ trabajos, aceites, equipos }) {
     .filter((a) => !fechaInicio || a.fecha >= fechaInicio)
     .filter((a) => !fechaFin || a.fecha <= fechaFin)
     .filter((a) => turno === "todos" || a.turno === turno)
+    .filter((a) => tipoAceite === "todos" || a.tipo_aceite === tipoAceite)
     .slice()
     .sort((a, b) => (claveOrden(a) < claveOrden(b) ? 1 : -1));
 
@@ -9577,7 +9635,7 @@ function Historial({ trabajos, aceites, equipos }) {
   const limiteA = limiteAceites;
 
   const hayFiltrosActivos =
-    equipo !== "todos" || fechaInicio || fechaFin || turno !== "todos" || grupo !== "todos";
+    equipo !== "todos" || fechaInicio || fechaFin || turno !== "todos" || (verTrabajos ? grupo !== "todos" : tipoAceite !== "todos");
 
   function limpiarFiltros() {
     setEquipo("todos");
@@ -9585,6 +9643,7 @@ function Historial({ trabajos, aceites, equipos }) {
     setFechaFin("");
     setTurno("todos");
     setGrupo("todos");
+    setTipoAceite("todos");
   }
 
   // Exporta lo que se está mostrando: trabajos o aceites.
@@ -9614,7 +9673,8 @@ function Historial({ trabajos, aceites, equipos }) {
           textoRango(fechaInicio, fechaFin),
           equipo !== "todos" && `Equipo ${equipo}`,
           TEXTO_TURNO[turno],
-          grupo !== "todos" && nombreGrupo(grupo),
+          verTrabajos && grupo !== "todos" && nombreGrupo(grupo),
+          verAceites && tipoAceite !== "todos" && tipoAceite,
         ]}
       >
       <div className="ts-filtros">
@@ -9665,17 +9725,31 @@ function Historial({ trabajos, aceites, equipos }) {
             <option value="noche">Noche</option>
           </select>
         </label>
-        <label className="ts-filtro" style={verTrabajos ? undefined : { opacity: 0.45 }} title={verTrabajos ? undefined : "El grupo solo aplica a trabajos"}>
-          <span>Grupo</span>
-          <select value={grupo} disabled={!verTrabajos} onChange={(e) => setGrupo(e.target.value)}>
-            <option value="todos">Todos</option>
-            {listaGrupos().map((g) => (
-              <option key={g.id} value={String(g.id)}>
-                {g.nombre}
-              </option>
-            ))}
-          </select>
-        </label>
+        {verTrabajos ? (
+          <label className="ts-filtro">
+            <span>Grupo</span>
+            <select value={grupo} onChange={(e) => setGrupo(e.target.value)}>
+              <option value="todos">Todos</option>
+              {listaGrupos().map((g) => (
+                <option key={g.id} value={String(g.id)}>
+                  {g.nombre}
+                </option>
+              ))}
+            </select>
+          </label>
+        ) : (
+          <label className="ts-filtro">
+            <span>Tipo de aceite</span>
+            <select value={tipoAceite} onChange={(e) => setTipoAceite(e.target.value)}>
+              <option value="todos">Todos</option>
+              {tiposAceiteHistorial.map((t) => (
+                <option key={t} value={t}>
+                  {t}
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
         {hayFiltrosActivos && (
           <button className="ts-btn-ghost" onClick={limpiarFiltros}>
             Limpiar filtros
@@ -14059,7 +14133,11 @@ function Estilos() {
         .ts-content { padding: 14px 12px 40px; }
         .ts-stack { gap: 14px; }
 
-        .ts-filtros-popover { top: 56px; right: 12px; width: calc(100vw - 24px); max-height: calc(100vh - 140px); }
+        /* Filtros centrados: mismo margen a la izquierda y a la derecha */
+        .ts-filtros-popover {
+          position: fixed !important; top: 60px; left: 12px !important; right: 12px !important;
+          width: auto !important; max-width: none !important; max-height: calc(100vh - 140px); overflow-y: auto;
+        }
         /* Filtros de los paneles de Inicio: cuadro completo dentro de la
            pantalla (antes se salía por la izquierda) con fondo oscurecido */
         .ts-filtro-panel-popover {
